@@ -68,7 +68,9 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.runtime.LaunchedEffect
@@ -288,11 +290,13 @@ fun EcoRowDivider(inset: Dp = 16.dp) {
     )
 }
 
-/** 可按压缩放（替代默认水波纹，接近原型的 scale(.97) 手感） */
+/** 可按压缩放（替代默认水波纹，接近原型的 scale(.97) 手感）；[onLongClick] 用于长按菜单 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Modifier.ecoPressable(
     enabled: Boolean = true,
     scaleTo: Float = 0.97f,
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ): Modifier {
     val interaction = remember { MutableInteractionSource() }
@@ -304,11 +308,23 @@ fun Modifier.ecoPressable(
     )
     return this
         .graphicsLayer { scaleX = scale; scaleY = scale }
-        .clickable(
-            interactionSource = interaction,
-            indication = LocalIndication.current,
-            enabled = enabled,
-            onClick = onClick,
+        .then(
+            if (onLongClick == null) {
+                Modifier.clickable(
+                    interactionSource = interaction,
+                    indication = LocalIndication.current,
+                    enabled = enabled,
+                    onClick = onClick,
+                )
+            } else {
+                Modifier.combinedClickable(
+                    interactionSource = interaction,
+                    indication = LocalIndication.current,
+                    enabled = enabled,
+                    onClick = onClick,
+                    onLongClick = onLongClick,
+                )
+            },
         )
 }
 

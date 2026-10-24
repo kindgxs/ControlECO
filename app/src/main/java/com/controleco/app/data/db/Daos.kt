@@ -106,7 +106,8 @@ interface TransactionDao {
 
     @Query(
         """SELECT a.id AS accountId, a.initialBalanceCents AS initialBalanceCents,
-           COALESCE(SUM(CASE WHEN t.type = 'EXPENSE' THEN -t.amountCents ELSE t.amountCents END), 0) AS signedSumCents
+           COALESCE(SUM(CASE WHEN t.excludeFromAssets = 1 THEN 0
+                             WHEN t.type = 'EXPENSE' THEN -t.amountCents ELSE t.amountCents END), 0) AS signedSumCents
            FROM accounts a LEFT JOIN transactions t ON t.accountId = a.id
            GROUP BY a.id"""
     )
@@ -246,6 +247,9 @@ interface TransactionDao {
     )
     suspend fun countByRange(startMillis: Long, endMillis: Long): Int
 
+    @Query("SELECT * FROM transactions ORDER BY id")
+    suspend fun getAllEntities(): List<TransactionEntity>
+
     @Query("SELECT COUNT(*) FROM transactions")
     suspend fun countAll(): Int
 
@@ -263,6 +267,9 @@ interface TransactionDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAllIgnore(txs: List<TransactionEntity>): List<Long>
+
+    @Insert
+    suspend fun insertAll(txs: List<TransactionEntity>)
 
     @Update
     suspend fun update(tx: TransactionEntity)
@@ -294,6 +301,16 @@ interface CategoryDao {
 
     @Query("DELETE FROM categories WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    /** 备份还原：清空重建（调用方先清 transactions，避免外键 RESTRICT） */
+    @Query("DELETE FROM categories")
+    suspend fun deleteAll()
+
+    @Query("UPDATE categories SET sortOrder = :sortOrder WHERE id = :id")
+    suspend fun updateSortOrder(id: Long, sortOrder: Int)
+
+    @Query("UPDATE categories SET parentId = :parentId WHERE id = :id")
+    suspend fun updateParent(id: Long, parentId: Long?)
 }
 
 @Dao
@@ -322,6 +339,63 @@ interface AccountDao {
 
     @Query("DELETE FROM accounts WHERE id = :id")
     suspend fun deleteById(id: Long)
+
+    /** 备份还原：清空重建（调用方先清 transactions，避免外键 RESTRICT） */
+    @Query("DELETE FROM accounts")
+    suspend fun deleteAll()
+
+    /** 默认账户全局唯一：先把所有账户的默认标记清掉 */
+    @Query("UPDATE accounts SET isDefault = 0")
+    suspend fun clearDefaults()
+
+    @Query("UPDATE accounts SET isDefault = 1 WHERE id = :id")
+    suspend fun markDefault(id: Long)
+}
+
+@Dao
+interface PlanDao {
+
+    @Query("SELECT * FROM installment_plans ORDER BY firstDateMillis DESC, id DESC")
+    fun observeInstallments(): Flow<List<InstallmentPlanEntity>>
+
+    @Query("SELECT * FROM installment_plans")
+    suspend fun getAllInstallments(): List<InstallmentPlanEntity>
+
+    @Query("SELECT * FROM installment_plans WHERE id = :id")
+    suspend fun getInstallment(id: Long): InstallmentPlanEntity?
+
+    @Insert
+    suspend fun insertInstallment(plan: InstallmentPlanEntity): Long
+
+    @Update
+    suspend fun updateInstallment(plan: InstallmentPlanEntity)
+
+    @Query("DELETE FROM installment_plans WHERE id = :id")
+    suspend fun deleteInstallment(id: Long)
+
+    @Query("DELETE FROM installment_plans")
+    suspend fun clearInstallments()
+
+    @Query("SELECT * FROM recurring_plans ORDER BY nextDateMillis ASC, id ASC")
+    fun observeRecurring(): Flow<List<RecurringPlanEntity>>
+
+    @Query("SELECT * FROM recurring_plans")
+    suspend fun getAllRecurring(): List<RecurringPlanEntity>
+
+    @Query("SELECT * FROM recurring_plans WHERE id = :id")
+    suspend fun getRecurring(id: Long): RecurringPlanEntity?
+
+    @Insert
+    suspend fun insertRecurring(plan: RecurringPlanEntity): Long
+
+    @Update
+    suspend fun updateRecurring(plan: RecurringPlanEntity)
+
+    @Query("DELETE FROM recurring_plans WHERE id = :id")
+    suspend fun deleteRecurring(id: Long)
+
+    @Query("DELETE FROM recurring_plans")
+    suspend fun clearRecurring()
 }
 
 @Dao

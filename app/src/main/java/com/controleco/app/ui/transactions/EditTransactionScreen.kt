@@ -39,7 +39,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.LedgerViewModel
+import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.TransactionEntity
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.eco.EcoConfirm
@@ -48,6 +50,9 @@ import com.controleco.app.ui.eco.EcoHairline
 import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
+import com.controleco.app.ui.eco.EcoRow
+import com.controleco.app.ui.eco.EcoRowDivider
+import com.controleco.app.ui.eco.EcoSheet
 import com.controleco.app.ui.eco.EcoTextAction
 import com.controleco.app.ui.eco.EcoToast
 import com.controleco.app.ui.eco.EcoTopBar
@@ -105,15 +110,19 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
         }
     }
 
-    // 默认选中：第一个账户 + 当前类型的第一个分类
+    // 默认选中：默认账户 + 当前类型的第一个一级分类
     LaunchedEffect(accounts, categories, type) {
-        if (accountId == null) accountId = accounts.firstOrNull()?.id
+        if (accountId == null) {
+            accountId = accounts.firstOrNull { it.isDefault }?.id ?: accounts.firstOrNull()?.id
+        }
         if (categories.firstOrNull { it.id == categoryId }?.type != type) {
-            categoryId = categories.firstOrNull { it.type == type }?.id
+            categoryId = CategoryTree.topLevel(categories, type).firstOrNull()?.id
         }
     }
 
-    val catsOfType = categories.filter { it.type == type }
+    // 只展示一级分类；二级分类通过长按一级分类选择
+    val catsOfType = CategoryTree.topLevel(categories, type)
+    var subPickerFor by remember { mutableStateOf<CategoryEntity?>(null) }
     val cents = Money.parseCents(amountText)
     val valid = cents != null && cents > 0L && categoryId != null && accountId != null
     val c = MaterialTheme.eco
@@ -225,7 +234,11 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
             )
 
             Spacer(Modifier.height(15.dp))
-            TxSectionLabel("分类")
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TxSectionLabel("分类")
+                Spacer(Modifier.weight(1f))
+                Text("长按一级分类可选二级", style = EcoType.PageNote, color = c.quiet, maxLines = 1)
+            }
             Spacer(Modifier.height(8.dp))
             if (catsOfType.isEmpty()) {
                 Text(
@@ -240,13 +253,25 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     catsOfType.forEach { category ->
+                        val selectedCategory = categories.firstOrNull { it.id == categoryId }
                         TxCategoryChip(
                             name = category.name,
-                            selected = categoryId == category.id,
+                            selected = category.id == categoryId ||
+                                selectedCategory?.parentId == category.id,
                             onClick = { categoryId = category.id },
+                            onLongClick = { subPickerFor = category },
                             height = 33.dp,
                         )
                     }
+                }
+                val picked = categories.firstOrNull { it.id == categoryId }
+                if (picked?.parentId != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "已选：${CategoryTree.displayName(categories, picked.id)}",
+                        style = EcoType.PageNote,
+                        color = c.blue,
+                    )
                 }
             }
 
@@ -324,6 +349,51 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
             }
 
             Spacer(Modifier.height(26.dp))
+        }
+    }
+
+    // 长按一级分类：选择它下面的二级分类（也可继续记在一级上）
+    val picker = subPickerFor
+    if (picker != null) {
+        val children = CategoryTree.childrenOf(categories, picker.id)
+        EcoSheet(
+            onDismiss = { subPickerFor = null },
+            title = picker.name,
+            subtitle = if (children.isEmpty()) "此分类还没有二级分类" else "选择二级分类，或记在一级分类上",
+        ) {
+            Column {
+                EcoRow(
+                    title = "记在「${picker.name}」",
+                    subtitle = "不使用二级分类",
+                    trail = if (categoryId == picker.id) "已选" else null,
+                    trailColor = c.blue,
+                    onClick = {
+                        categoryId = picker.id
+                        subPickerFor = null
+                    },
+                )
+                children.forEach { child ->
+                    EcoRowDivider()
+                    EcoRow(
+                        title = child.name,
+                        subtitle = CategoryTree.displayName(categories, child.id),
+                        trail = if (categoryId == child.id) "已选" else null,
+                        trailColor = c.blue,
+                        onClick = {
+                            categoryId = child.id
+                            subPickerFor = null
+                        },
+                    )
+                }
+                if (children.isEmpty()) {
+                    EcoRowDivider()
+                    EcoRow(
+                        title = "去「分类」页长按添加二级分类",
+                        subtitle = "二级分类只占所属一级分类的预算",
+                        onClick = null,
+                    )
+                }
+            }
         }
     }
 

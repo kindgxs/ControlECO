@@ -25,7 +25,9 @@ import com.controleco.app.data.db.CaptureTraceRow
 import com.controleco.app.data.db.CapturedNotificationEntity
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.CategorySumRow
+import com.controleco.app.data.db.InstallmentPlanEntity
 import com.controleco.app.data.db.PendingTransactionEntity
+import com.controleco.app.data.db.RecurringPlanEntity
 import com.controleco.app.data.db.RefundCategory
 import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionEntity
@@ -33,11 +35,23 @@ import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TypeTotalRow
 import com.controleco.app.data.db.TxSource
 import com.controleco.app.data.db.TxType
+import com.controleco.app.data.backup.BackupStore
 import com.controleco.app.data.budget.Budget
 import com.controleco.app.data.budget.CategoryBudgetMath
 import com.controleco.app.data.budget.CategoryBudgetMode
+import com.controleco.app.data.budget.MonthBudgetCodec
+import com.controleco.app.data.budget.MonthBudgetMath
+import com.controleco.app.data.budget.MonthBudgetPlan
 import com.controleco.app.data.budget.MonthPeriod
+import com.controleco.app.data.CategoryTree
+import com.controleco.app.data.SubcategoryRollupMode
+import com.controleco.app.data.deposit.DepositMath
+import com.controleco.app.data.model.AssetSummary
 import com.controleco.app.data.model.BillSource
+import com.controleco.app.data.plan.PLAN_TX_TYPE
+import com.controleco.app.data.plan.InstallmentMath
+import com.controleco.app.data.plan.RecurringFrequency
+import com.controleco.app.data.plan.RecurringMath
 import com.controleco.app.data.model.ImportCommitResult
 import com.controleco.app.data.model.ParsedBill
 import com.controleco.app.update.AppUpdate
@@ -74,6 +88,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     private val captureDao = db.captureDao()
     private val traceDao = db.traceDao()
     private val merchantRuleDao = db.merchantRuleDao()
+    private val planDao = db.planDao()
 
     private val zone: ZoneId = ZoneId.systemDefault()
 
@@ -141,17 +156,94 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     /** 日预算金额（0 = 未设置；是否生效看 [dailyBudgetMode]） */
     val dailyBudgetCents: StateFlow<Long> = _dailyBudgetAmount
 
-    /** 生效的月预算：按日模式 = 日预算 × 本期天数（跨月自动重算）；否则 = 月金额 */
+    // ---------- 设置：按月预算（功能5） ----------
+
+    /** 各月独立预算（key = 会计月标签）；没有单独设置的月份回落到全局预算 */
+    private val _budgetPlans = MutableStateFlow(loadBudgetPlans())
+    val budgetPlans: StateFlow<Map<YearMonth, MonthBudgetPlan>> = _budgetPlans
+
+    private fun loadBudgetPlans(): Map<YearMonth, MonthBudgetPlan> = prefs.all.entries
+        .mapNotNull { (key, value) ->
+            if (!key.startsWith(KEY_BUDGET_PLAN_PREFIX)) return@mapNotNull null
+            val ym = parseMonthKey(key.removePrefix(KEY_BUDGET_PLAN_PREFIX)) ?: return@mapNotNull null
+            val plan = MonthBudgetCodec.decode(value as? String) ?: return@mapNotNull null
+            ym to plan
+        }
+        .toMap()
+
+    private fun parseMonthKey(text: String): YearMonth? = runCatching {
+        val parts = text.split('-')
+        YearMonth.of(parts[0].toInt(), parts[1].toInt())
+    }.getOrNull()
+
+    /** 当前（今天所在）会计月的独立预算；没有则 null */
+    fun planOf(month: YearMonth): MonthBudgetPlan? = _budgetPlans.value[month]
+
+    /** 某月的生效预算（含全局回落；纯函数，统计页也直接用 MonthBudgetMath） */
+    fun budgetOf(month: YearMonth): Long = MonthBudgetMath.totalFor(
+        month,
+        _monthStartDay.value,
+        _budgetPlans.value,
+        _monthlyBudgetAmount.value,
+        _dailyBudgetAmount.value,
+        _dailyBudgetMode.value,
+    )
+
+    /** 保存某月总预算（cents ≤ 0 视为删除该月独立预算，回到全局） */
+    fun setMonthlyBudgetFor(month: YearMonth, cents: Long) {
+        val old = _budgetPlans.value[month] ?: MonthBudgetPlan()
+        val next = old.copy(totalCents = cents.coerceAtLeast(0L))
+        val editor = prefs.edit()
+        if (next.totalCents <= 0L && next.categoryCents.isEmpty()) {
+            editor.remove(MonthBudgetCodec.keyOf(month))
+        } else {
+            editor.putString(MonthBudgetCodec.keyOf(month), MonthBudgetCodec.encode(next))
+        }
+        editor.apply()
+        _budgetPlans.value = loadBudgetPlans()
+        AppLog.i("settings", "monthBudget[$month]=${Money.formatYuan(cents)}")
+    }
+
+    /** 保存某月的分类预算（cents ≤ 0 = 清除该分类在该月的设置） */
+    fun setCategoryBudgetFor(month: YearMonth, categoryId: Long, cents: Long) {
+        val old = _budgetPlans.value[month] ?: MonthBudgetPlan()
+        val next = old.withCategory(categoryId, cents)
+        val editor = prefs.edit()
+        if (next.totalCents <= 0L && next.categoryCents.isEmpty()) {
+            editor.remove(MonthBudgetCodec.keyOf(month))
+        } else {
+            editor.putString(MonthBudgetCodec.keyOf(month), MonthBudgetCodec.encode(next))
+        }
+        editor.apply()
+        _budgetPlans.value = loadBudgetPlans()
+    }
+
+    /** 生效的月预算：该月单独设置的总额 → 优先；否则按日模式 = 日预算 × 本期天数，或全局月金额 */
     val monthlyBudgetCents: StateFlow<Long> = combine(
+        _monthlyBudgetAmount, _dailyBudgetAmount, _dailyBudgetMode, currentPeriod, _budgetPlans,
+    ) { amount, daily, dailyMode, period, plans ->
+        MonthBudgetMath.totalFor(
+            YearMonth.from(period.start), _monthStartDay.value, plans, amount, daily, dailyMode,
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), effectiveMonthlyBudget())
+
+    /** 全局月预算（不含某月独立设置）：统计页计算"查看月份的回落值"用 */
+    val globalMonthlyBudgetCents: StateFlow<Long> = combine(
         _monthlyBudgetAmount, _dailyBudgetAmount, _dailyBudgetMode, currentPeriod,
     ) { amount, daily, dailyMode, period ->
         if (dailyMode) daily * period.days else amount
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), effectiveMonthlyBudget())
 
-    private fun effectiveMonthlyBudget(): Long = if (_dailyBudgetMode.value) {
-        _dailyBudgetAmount.value * MonthPeriod.of(LocalDate.now(zone), _monthStartDay.value).days
-    } else {
-        _monthlyBudgetAmount.value
+    private fun effectiveMonthlyBudget(): Long {
+        val month = YearMonth.from(MonthPeriod.of(LocalDate.now(zone), _monthStartDay.value).start)
+        return MonthBudgetMath.totalFor(
+            month,
+            _monthStartDay.value,
+            _budgetPlans.value,
+            _monthlyBudgetAmount.value,
+            _dailyBudgetAmount.value,
+            _dailyBudgetMode.value,
+        )
     }
 
     /** 月预算输入（金额模式）：cents ≤ 0 视为未设置 */
@@ -436,6 +528,25 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         periodRange.flatMapLatest { (start, end) -> txDao.observeSpendingCategorySums(start, end) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    // ---------- 日历（功能1） ----------
+
+    private val _calendarMonth = MutableStateFlow(YearMonth.now(zone))
+    val calendarMonth: StateFlow<YearMonth> = _calendarMonth
+
+    fun setCalendarMonth(month: YearMonth) { _calendarMonth.value = month }
+
+    fun prevCalendarMonth() { _calendarMonth.value = _calendarMonth.value.minusMonths(1) }
+
+    fun nextCalendarMonth() { _calendarMonth.value = _calendarMonth.value.plusMonths(1) }
+
+    /** 日历月（自然月）的全部账单行 */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val calendarRows: StateFlow<List<TransactionRow>?> = _calendarMonth.flatMapLatest { month ->
+        val start = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val end = month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        txDao.observeRows(start, end)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     /**
      * 本期「实际支出」= 未被标记「已退款」的支出之和。
      * 统计页 `02` 的总支出用它，与首页「本月支出」是同一个数。
@@ -562,20 +673,89 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 账户 ----------
 
-    fun saveAccount(id: Long, name: String, initialBalanceCents: Long, note: String, onResult: (String?) -> Unit) {
+    /**
+     * 保存账户。`creditLimitCents > 0` 视为信用卡（可参与共用额度组）。
+     * `isDefault = true` 会把它设为唯一默认账户。
+     */
+    fun saveAccount(
+        id: Long,
+        name: String,
+        initialBalanceCents: Long,
+        note: String,
+        creditLimitCents: Long = 0L,
+        sharedGroupId: Long = 0L,
+        isDefault: Boolean = false,
+        onResult: (String?) -> Unit,
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
+                if (isDefault) accountDao.clearDefaults()
                 if (id > 0) {
                     accountDao.getById(id)?.let { old ->
-                        accountDao.update(old.copy(name = name, initialBalanceCents = initialBalanceCents, note = note))
+                        accountDao.update(
+                            old.copy(
+                                name = name, initialBalanceCents = initialBalanceCents, note = note,
+                                creditLimitCents = creditLimitCents.coerceAtLeast(0L),
+                                sharedGroupId = sharedGroupId.coerceAtLeast(0L),
+                                isDefault = isDefault || old.isDefault,
+                            ),
+                        )
                     }
                 } else {
-                    accountDao.insert(AccountEntity(name = name, initialBalanceCents = initialBalanceCents, note = note))
+                    accountDao.insert(
+                        AccountEntity(
+                            name = name, initialBalanceCents = initialBalanceCents, note = note,
+                            creditLimitCents = creditLimitCents.coerceAtLeast(0L),
+                            sharedGroupId = sharedGroupId.coerceAtLeast(0L),
+                            isDefault = isDefault,
+                        ),
+                    )
                 }
                 withContext(Dispatchers.Main) { onResult(null) }
             } catch (e: Exception) {
                 AppLog.e("account", "save failed", e)
                 withContext(Dispatchers.Main) { onResult("保存失败") }
+            }
+        }
+    }
+
+    /** 把某个账户设为唯一默认账户（记账页优先选中它） */
+    fun setDefaultAccount(id: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                accountDao.clearDefaults()
+                accountDao.markDefault(id)
+                AppLog.i("account", "default=$id")
+            } catch (e: Exception) {
+                AppLog.e("account", "set default failed", e)
+            }
+        }
+    }
+
+    /**
+     * 共用额度组：两张（或多张）信用卡共用同一个欠款额度。
+     * [withAccountId] = null 表示退出共用组；否则把两张卡合并到同一组（组 id = 较小的账户 id）。
+     * 组内额度取成员里最大的额度，避免共用后上限突然变小。
+     */
+    fun setSharedCreditGroup(accountId: Long, withAccountId: Long?) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val all = accountDao.getAll()
+                val a = all.firstOrNull { it.id == accountId } ?: return@launch
+                if (withAccountId == null) {
+                    // 退出：同组其余成员一并退出，避免留下半组数据
+                    val group = a.sharedGroupId
+                    all.filter { group != 0L && it.sharedGroupId == group }
+                        .forEach { accountDao.update(it.copy(sharedGroupId = 0L)) }
+                    return@launch
+                }
+                val b = all.firstOrNull { it.id == withAccountId } ?: return@launch
+                val groupId = minOf(a.id, b.id)
+                val limit = maxOf(a.creditLimitCents, b.creditLimitCents)
+                listOf(a, b).forEach { accountDao.update(it.copy(sharedGroupId = groupId, creditLimitCents = limit)) }
+                AppLog.i("account", "shared credit group #$groupId: ${a.id} + ${b.id}")
+            } catch (e: Exception) {
+                AppLog.e("account", "set shared group failed", e)
             }
         }
     }
@@ -594,12 +774,13 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---------- 分类 ----------
 
-    /** 保存分类（新增或改名 / 换图标 / 改类型）；icon 规格见 [CategoryIcon] */
+    /** 保存分类（新增或改名 / 换图标 / 改类型 / 挂到一级分类下）；icon 规格见 [CategoryIcon] */
     fun saveCategory(
         id: Long,
         name: String,
         type: TxType,
         icon: String,
+        parentId: Long? = null,
         onResult: (savedId: Long, error: String?) -> Unit,
     ) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -611,15 +792,40 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val all = categoryDao.getAll()
                 val current = all.firstOrNull { it.id == id }
-                // 「其他」是删除分类时的兜底，改名/改类型会让兜底失效
-                if (current != null && current.name == "其他" &&
+                val parent = parentId?.let { pid -> all.firstOrNull { it.id == pid } }
+                // 只支持两级：二级分类的父级必须是一级分类
+                if (parentId != null) {
+                    when {
+                        parent == null || parent.parentId != null -> {
+                            withContext(Dispatchers.Main) { onResult(0L, "只能挂在一级分类下") }
+                            return@launch
+                        }
+                        parent.type != type -> {
+                            withContext(Dispatchers.Main) { onResult(0L, "二级分类必须与一级分类同类型") }
+                            return@launch
+                        }
+                        id == parentId -> {
+                            withContext(Dispatchers.Main) { onResult(0L, "不能选择自己作为上级") }
+                            return@launch
+                        }
+                        id > 0 && all.any { it.parentId == id } -> {
+                            withContext(Dispatchers.Main) { onResult(0L, "该分类下已有二级分类，不能再改为二级") }
+                            return@launch
+                        }
+                    }
+                }
+                // 「其他」是删除分类时的兜底，改名/改类型会让兜底失效（只限制一级）
+                if (current != null && current.name == "其他" && current.parentId == null &&
                     (trimmed != "其他" || type != current.type)
                 ) {
                     withContext(Dispatchers.Main) { onResult(0L, "「其他」不能改名或修改类型") }
                     return@launch
                 }
-                // 同类型下不允许同名（支出与收入各自可以有一个「其他」）
-                if (all.any { it.id != id && it.type == type && it.name.trim() == trimmed }) {
+                // 同层级下不允许同名（不同一级分类下可以有同名二级分类）
+                if (all.any {
+                        it.id != id && it.type == type && it.parentId == parentId && it.name.trim() == trimmed
+                    }
+                ) {
                     withContext(Dispatchers.Main) { onResult(0L, "已存在同名分类") }
                     return@launch
                 }
@@ -629,11 +835,24 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         if (old.icon != icon) {
                             CategoryIcon.deleteImage(getApplication(), CategoryIcon.imageOf(old.icon))
                         }
-                        categoryDao.update(old.copy(name = trimmed, type = type, icon = icon))
+                        categoryDao.update(old.copy(name = trimmed, type = type, icon = icon, parentId = parentId))
+                        // 一级分类改类型时，其二级分类跟着改，避免出现类型不一致的子树
+                        if (old.parentId == null && old.type != type) {
+                            all.filter { it.parentId == old.id }.forEach {
+                                categoryDao.update(it.copy(type = type))
+                            }
+                        }
                     }
                     id
                 } else {
-                    categoryDao.insert(CategoryEntity(name = trimmed, type = type, icon = icon))
+                    val nextOrder = (all.filter { it.type == type && it.parentId == parentId }
+                        .maxOfOrNull { it.sortOrder } ?: -1) + 1
+                    categoryDao.insert(
+                        CategoryEntity(
+                            name = trimmed, type = type, icon = icon,
+                            sortOrder = nextOrder, parentId = parentId,
+                        ),
+                    )
                 }
                 withContext(Dispatchers.Main) { onResult(savedId, null) }
             } catch (e: Exception) {
@@ -643,7 +862,33 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 删除分类：其下流水改挂到同类型的「其他」；「其他」本身不可删 */
+    /** 分类排序：在同级（同一父级、同一类型）内上移 / 下移一位 */
+    fun moveCategory(id: Long, up: Boolean) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val all = categoryDao.getAll()
+                val target = all.firstOrNull { it.id == id } ?: return@launch
+                val siblings = all
+                    .filter { it.parentId == target.parentId && it.type == target.type }
+                    .sortedWith(compareBy({ it.sortOrder }, { it.id }))
+                    .toMutableList()
+                // 先把 sortOrder 归一化成下标，避免历史数据全是 0 时移动无效
+                siblings.forEachIndexed { index, c ->
+                    if (c.sortOrder != index) categoryDao.updateSortOrder(c.id, index)
+                }
+                val from = siblings.indexOfFirst { it.id == id }
+                val to = if (up) from - 1 else from + 1
+                if (from < 0 || to !in siblings.indices) return@launch
+                categoryDao.updateSortOrder(siblings[from].id, to)
+                categoryDao.updateSortOrder(siblings[to].id, from)
+                AppLog.i("category", "move #$id ${if (up) "up" else "down"}")
+            } catch (e: Exception) {
+                AppLog.e("category", "move failed", e)
+            }
+        }
+    }
+
+    /** 删除分类：其下流水改挂到同类型的「其他」；「其他」本身不可删；一级分类连带删除其二级分类 */
     fun deleteCategory(id: Long, onResult: (String?) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -653,24 +898,27 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     withContext(Dispatchers.Main) { onResult("分类不存在") }
                     return@launch
                 }
-                if (target.name == "其他") {
+                if (target.name == "其他" && target.parentId == null) {
                     withContext(Dispatchers.Main) { onResult("「其他」不能删除") }
                     return@launch
                 }
-                var fallback = all.firstOrNull { it.type == target.type && it.name == "其他" }
-                if (fallback == null) {
-                    val newId = categoryDao.insert(CategoryEntity(name = "其他", type = target.type))
-                    fallback = categoryDao.getAll().firstOrNull { it.id == newId }
+                val targets = listOf(target) + all.filter { it.parentId == target.id }
+                targets.forEach { item ->
+                    var fallback = all.firstOrNull {
+                        it.type == item.type && it.name == "其他" && it.parentId == null
+                    }
+                    if (fallback == null) {
+                        val newId = categoryDao.insert(CategoryEntity(name = "其他", type = item.type))
+                        fallback = categoryDao.getAll().firstOrNull { it.id == newId }
+                    }
+                    if (fallback != null) {
+                        txDao.reassignCategory(item.id, fallback.id)
+                        categoryDao.deleteById(item.id)
+                        CategoryIcon.deleteImage(getApplication(), CategoryIcon.imageOf(item.icon))
+                        setCategoryBudget(item.id, 0L) // 分类删除时同步清理其分类预算
+                        setCategoryBudgetPercent(item.id, 0)
+                    }
                 }
-                if (fallback == null) {
-                    withContext(Dispatchers.Main) { onResult("删除失败") }
-                    return@launch
-                }
-                txDao.reassignCategory(id, fallback.id)
-                categoryDao.deleteById(id)
-                CategoryIcon.deleteImage(getApplication(), CategoryIcon.imageOf(target.icon))
-                setCategoryBudget(id, 0L) // 分类删除时同步清理其分类预算
-                setCategoryBudgetPercent(id, 0)
                 withContext(Dispatchers.Main) { onResult(null) }
             } catch (e: Exception) {
                 AppLog.e("category", "delete failed", e)
@@ -715,15 +963,20 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     /** 各分类预算的比例（万分比，1% = 100；只含已设置项）——比例方案下列表/编辑框显示它 */
     val categoryBudgetPercents: StateFlow<Map<Long, Int>> = _categoryBudgetPercents
 
+    /** 当前会计月单独设置的分类预算（null = 该月没有独立设置） */
+    private val currentMonthPlan: StateFlow<MonthBudgetPlan?> = combine(currentPeriod, _budgetPlans) { period, plans ->
+        plans[YearMonth.from(period.start)]
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     /**
-     * 各分类预算的**生效月金额**（分）：金额方案直接取金额；比例方案按当前月预算折算。
-     * 首页分类环、统计页饼图与"还可分配"都读它——两种方案在下游看来没有区别。
+     * 各分类预算的**生效月金额**（分）：金额方案 = 全局金额叠加当前月的独立设置；
+     * 比例方案按当前月预算折算。首页分类环、统计页饼图与"还可分配"都读它。
      */
     val categoryBudgets: StateFlow<Map<Long, Long>> = combine(
-        _categoryBudgetAmounts, _categoryBudgetPercents, _categoryBudgetMode, monthlyBudgetCents,
-    ) { amounts, percents, mode, monthly ->
+        _categoryBudgetAmounts, _categoryBudgetPercents, _categoryBudgetMode, monthlyBudgetCents, currentMonthPlan,
+    ) { amounts, percents, mode, monthly, plan ->
         if (mode == CategoryBudgetMode.AMOUNT) {
-            amounts
+            if (plan == null || plan.categoryCents.isEmpty()) amounts else amounts + plan.categoryCents
         } else {
             percents.mapValues { (_, bp) -> CategoryBudgetMath.centsOf(bp, monthly) }
         }
@@ -731,13 +984,18 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun effectiveCategoryBudgets(): Map<Long, Long> =
         if (_categoryBudgetMode.value == CategoryBudgetMode.AMOUNT) {
-            _categoryBudgetAmounts.value
+            val month = YearMonth.from(MonthPeriod.of(LocalDate.now(zone), _monthStartDay.value).start)
+            val own = _budgetPlans.value[month]?.categoryCents.orEmpty()
+            _categoryBudgetAmounts.value + own
         } else {
             val monthly = effectiveMonthlyBudget()
             _categoryBudgetPercents.value.mapValues { (_, bp) -> CategoryBudgetMath.centsOf(bp, monthly) }
         }
 
-    /** 金额方案：cents ≤ 0 表示清除该分类预算（比例一侧的值保留，切换方案不丢） */
+    /**
+     * 金额方案：cents ≤ 0 表示清除该分类预算。
+     * 同时写入**当前会计月**的独立预算（功能5：每月可单独设置），并保留为全局默认值。
+     */
     fun setCategoryBudget(categoryId: Long, cents: Long) {
         val editor = prefs.edit()
         if (cents > 0) {
@@ -747,8 +1005,13 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
         editor.apply()
         _categoryBudgetAmounts.value = loadCategoryBudgetAmounts()
+        setCategoryBudgetFor(currentMonth(), categoryId, cents)
         AppLog.i("settings", "categoryBudget[$categoryId]=${Money.formatYuan(cents)}")
     }
+
+    /** 当前会计月标签（按今天的会计月首日计算） */
+    fun currentMonth(): YearMonth =
+        YearMonth.from(MonthPeriod.of(LocalDate.now(zone), _monthStartDay.value).start)
 
     /** 比例方案：bp（万分比）≤ 0 表示清除该分类预算 */
     fun setCategoryBudgetPercent(categoryId: Long, bp: Int) {
@@ -1356,6 +1619,350 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- 资产：净资产 / 存款 / 负债（功能1） ----------
+
+    /**
+     * 资产总览：净资产 = 存款 − 负债。
+     * 余额 ≥ 0 计入存款，余额 < 0 计入负债（信用卡欠款、透支等）。
+     */
+    val assetSummary: StateFlow<AssetSummary?> = combine(accounts, accountBalances) { accs, rows ->
+        val balanceById = rows.associate { it.accountId to (it.initialBalanceCents + it.signedSumCents) }
+        var deposit = 0L
+        var liability = 0L
+        accs.forEach { account ->
+            val balance = balanceById[account.id] ?: account.initialBalanceCents
+            if (balance >= 0L) deposit += balance else liability += -balance
+        }
+        AssetSummary(deposit, liability, accs.size)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    // ---------- 存款目标与存款分析（功能7） ----------
+
+    private val _depositGoalCents = MutableStateFlow(prefs.getLong(KEY_DEPOSIT_GOAL, 0L))
+
+    /** 每月存款目标（分）：0 = 未设置 */
+    val depositGoalCents: StateFlow<Long> = _depositGoalCents
+
+    fun setDepositGoal(cents: Long) {
+        val v = cents.coerceAtLeast(0L)
+        prefs.edit().putLong(KEY_DEPOSIT_GOAL, v).apply()
+        _depositGoalCents.value = v
+        AppLog.i("settings", "depositGoal=${Money.formatYuan(v)}")
+    }
+
+    /** 近 12 个会计月的账单行：存款趋势与每月新增存款的数据源 */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val depositRows: StateFlow<List<TransactionRow>?> = currentPeriod.flatMapLatest { period ->
+        val endMonth = YearMonth.from(period.start)
+        val start = endMonth.minusMonths(11).atDay(1)
+        val end = endMonth.plusMonths(1).atDay(1)
+        txDao.observeRows(
+            start.atStartOfDay(zone).toInstant().toEpochMilli(),
+            end.atStartOfDay(zone).toInstant().toEpochMilli(),
+        )
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** 当月实际新增存款 = 当月收入 − 当月（未退款）支出 */
+    val currentMonthSaving: StateFlow<DepositMath.MonthSaving?> = combine(periodRows, currentPeriod) { rows, period ->
+        rows?.let { DepositMath.rangeSaving(it, period.start, period.endExclusive, zone) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** 含当月的连续 12 个月存款趋势（缺数据的月补 0） */
+    val depositTrend: StateFlow<List<DepositMath.MonthSaving>?> = combine(depositRows, currentPeriod) { rows, period ->
+        rows?.let {
+            DepositMath.trendEndingAt(
+                DepositMath.monthlySavings(it, zone),
+                YearMonth.from(period.start),
+                12,
+            )
+        }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    // ---------- 二级分类统计口径（功能3） ----------
+
+    private val _subcategoryRollupMode = MutableStateFlow(
+        SubcategoryRollupMode.of(prefs.getString(KEY_SUBCAT_ROLLUP, null)),
+    )
+
+    /** 月支出按一级分类统计，还是把同名二级分类与一级分类合并 */
+    val subcategoryRollupMode: StateFlow<SubcategoryRollupMode> = _subcategoryRollupMode
+
+    fun setSubcategoryRollupMode(mode: SubcategoryRollupMode) {
+        prefs.edit().putString(KEY_SUBCAT_ROLLUP, mode.name).apply()
+        _subcategoryRollupMode.value = mode
+        AppLog.i("settings", "subcategoryRollup=${mode.name}")
+    }
+
+    /** 按当前口径把分类支出折算到一级分类（统计页圆环、首页分类预算共用） */
+    fun rollupCategorySums(
+        sums: List<CategorySumRow>,
+        categories: List<CategoryEntity>,
+    ): List<CategorySumRow> = CategoryTree.rollup(sums, categories, _subcategoryRollupMode.value)
+
+    // ---------- 分期 · 周期记账（功能2） ----------
+
+    val installmentPlans: StateFlow<List<InstallmentPlanEntity>> =
+        planDao.observeInstallments()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    val recurringPlans: StateFlow<List<RecurringPlanEntity>> =
+        planDao.observeRecurring()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    fun saveInstallment(
+        id: Long,
+        title: String,
+        accountId: Long,
+        categoryId: Long,
+        totalPrincipalCents: Long,
+        totalInterestCents: Long,
+        periods: Int,
+        firstDateMillis: Long,
+        deductAsset: Boolean,
+        note: String = "",
+        onResult: (String?) -> Unit,
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (title.isBlank()) { mainResult(onResult, "请输入名称"); return@launch }
+                if (totalPrincipalCents <= 0L) { mainResult(onResult, "请输入本金"); return@launch }
+                if (periods !in InstallmentMath.MIN_PERIODS..InstallmentMath.MAX_PERIODS) {
+                    mainResult(onResult, "期数需在 1~${InstallmentMath.MAX_PERIODS} 之间"); return@launch
+                }
+                if (accountId <= 0L || categoryId <= 0L) { mainResult(onResult, "请选择账户和分类"); return@launch }
+                val oldPlan = if (id > 0) planDao.getInstallment(id) else null
+                val entity = InstallmentPlanEntity(
+                    id = id,
+                    title = title.trim(),
+                    accountId = accountId,
+                    categoryId = categoryId,
+                    totalPrincipalCents = totalPrincipalCents.coerceAtLeast(0L),
+                    totalInterestCents = totalInterestCents.coerceAtLeast(0L),
+                    periods = periods,
+                    firstDateMillis = firstDateMillis,
+                    deductAsset = deductAsset,
+                    note = note,
+                    postedPeriods = oldPlan?.postedPeriods ?: 0,
+                    createdAt = oldPlan?.createdAt ?: System.currentTimeMillis(),
+                )
+                if (id > 0) planDao.updateInstallment(entity) else planDao.insertInstallment(entity)
+                mainResult(onResult, null)
+            } catch (e: Exception) {
+                AppLog.e("plan", "save installment failed", e)
+                mainResult(onResult, "保存失败")
+            }
+        }
+    }
+
+    fun saveRecurring(
+        id: Long,
+        title: String,
+        type: TxType,
+        amountCents: Long,
+        categoryId: Long,
+        accountId: Long,
+        frequency: RecurringFrequency,
+        firstDateMillis: Long,
+        deductAsset: Boolean,
+        autoPost: Boolean = false,
+        note: String = "",
+        onResult: (String?) -> Unit,
+    ) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                if (title.isBlank()) { mainResult(onResult, "请输入名称"); return@launch }
+                if (amountCents <= 0L) { mainResult(onResult, "请输入金额"); return@launch }
+                if (categoryId <= 0L || accountId <= 0L) { mainResult(onResult, "请选择账户和分类"); return@launch }
+                val old = if (id > 0) planDao.getRecurring(id) else null
+                val first = RecurringMath.dateOf(firstDateMillis, zone)
+                val next = if (id > 0 && old != null) old.nextDateMillis
+                else RecurringMath.millisAt(RecurringMath.next(first, frequency), zone)
+                val entity = RecurringPlanEntity(
+                    id = id,
+                    title = title.trim(),
+                    type = type,
+                    amountCents = amountCents.coerceAtLeast(0L),
+                    categoryId = categoryId,
+                    accountId = accountId,
+                    frequency = frequency.name,
+                    firstDateMillis = firstDateMillis,
+                    nextDateMillis = next,
+                    deductAsset = deductAsset,
+                    autoPost = autoPost,
+                    note = note,
+                    createdAt = old?.createdAt ?: System.currentTimeMillis(),
+                )
+                if (id > 0) planDao.updateRecurring(entity) else planDao.insertRecurring(entity)
+                mainResult(onResult, null)
+            } catch (e: Exception) {
+                AppLog.e("plan", "save recurring failed", e)
+                mainResult(onResult, "保存失败")
+            }
+        }
+    }
+
+    fun deleteInstallment(id: Long, onDone: (String?) -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { planDao.deleteInstallment(id) }
+                .onSuccess { mainResult(onDone, null) }
+                .onFailure {
+                    AppLog.e("plan", "delete installment failed", it)
+                    mainResult(onDone, "删除失败")
+                }
+        }
+    }
+
+    fun deleteRecurring(id: Long, onDone: (String?) -> Unit = {}) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { planDao.deleteRecurring(id) }
+                .onSuccess { mainResult(onDone, null) }
+                .onFailure {
+                    AppLog.e("plan", "delete recurring failed", it)
+                    mainResult(onDone, "删除失败")
+                }
+        }
+    }
+
+    /**
+     * 记下一期分期：金额 = 该期本金 + 该期利息；日期按首期日期逐月顺延。
+     * `deductAsset = false` 时写入 `excludeFromAssets`（只记账、不扣资产）。
+     */
+    fun postInstallment(id: Long, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val plan = planDao.getInstallment(id) ?: run { mainResult(onDone, "计划不存在"); return@launch }
+                if (plan.postedPeriods >= plan.periods) { mainResult(onDone, "该计划已全部记完"); return@launch }
+                val index = plan.postedPeriods + 1
+                val date = InstallmentMath.periodDate(RecurringMath.dateOf(plan.firstDateMillis, zone), index)
+                val amount = InstallmentMath.periodTotal(
+                    plan.totalPrincipalCents, plan.totalInterestCents, plan.periods, index,
+                )
+                if (amount <= 0L) { mainResult(onDone, "该期金额为 0"); return@launch }
+                txDao.insert(
+                    TransactionEntity(
+                        type = PLAN_TX_TYPE,
+                        amountCents = amount,
+                        categoryId = plan.categoryId,
+                        accountId = plan.accountId,
+                        timestamp = RecurringMath.millisAt(date, zone),
+                        note = plan.note.ifBlank { "${plan.title} 第${index}/${plan.periods}期" },
+                        counterparty = plan.title,
+                        source = TxSource.MANUAL,
+                        excludeFromAssets = !plan.deductAsset,
+                    ),
+                )
+                planDao.updateInstallment(plan.copy(postedPeriods = index))
+                AppLog.i("plan", "installment #$id posted period $index")
+                mainResult(onDone, null)
+            } catch (e: Exception) {
+                AppLog.e("plan", "post installment failed", e)
+                mainResult(onDone, "记账失败")
+            }
+        }
+    }
+
+    /** 记下一笔周期账单（按计划的下次日期入账，然后顺延下次日期） */
+    fun postRecurring(id: Long, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val plan = planDao.getRecurring(id) ?: run { mainResult(onDone, "计划不存在"); return@launch }
+                val date = RecurringMath.dateOf(plan.nextDateMillis, zone)
+                txDao.insert(
+                    TransactionEntity(
+                        type = plan.type,
+                        amountCents = plan.amountCents,
+                        categoryId = plan.categoryId,
+                        accountId = plan.accountId,
+                        timestamp = RecurringMath.millisAt(date, zone),
+                        note = plan.note.ifBlank { plan.title },
+                        counterparty = plan.title,
+                        source = TxSource.MANUAL,
+                        excludeFromAssets = !plan.deductAsset,
+                    ),
+                )
+                val frequency = RecurringFrequency.of(plan.frequency)
+                val next = RecurringMath.next(date, frequency)
+                planDao.updateRecurring(plan.copy(nextDateMillis = RecurringMath.millisAt(next, zone)))
+                AppLog.i("plan", "recurring #$id posted, next=$next")
+                mainResult(onDone, null)
+            } catch (e: Exception) {
+                AppLog.e("plan", "post recurring failed", e)
+                mainResult(onDone, "记账失败")
+            }
+        }
+    }
+
+    // ---------- 备份还原（功能2） ----------
+
+    /** 导出全部账单 + 分类（含二级）+ 分期/周期 + 设置到 SAF 文件 */
+    fun exportBackup(uri: Uri, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val text = BackupStore.exportJson(getApplication(), db, prefs)
+                getApplication<AccBookApp>().contentResolver.openOutputStream(uri)?.use {
+                    it.write(text.toByteArray(Charsets.UTF_8))
+                } ?: throw IllegalStateException("无法写入所选文件")
+                AppLog.i("backup", "exported ${text.length} chars")
+                mainResult(onDone, null)
+            } catch (e: Exception) {
+                AppLog.e("backup", "export failed", e)
+                mainResult(onDone, e.message ?: "导出失败")
+            }
+        }
+    }
+
+    /** 从备份文件恢复：清空当前账单/分类/账户/计划后重建，并恢复设置 */
+    fun importBackup(uri: Uri, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val bytes = getApplication<AccBookApp>().contentResolver.openInputStream(uri)?.use {
+                    it.readBytes()
+                } ?: throw IllegalStateException("无法读取所选文件")
+                val count = BackupStore.importJson(getApplication(), db, prefs, bytes.toString(Charsets.UTF_8))
+                // 设置可能变了（月首日 / 货币 / 预算），重新载入内存状态
+                reloadSettingsFromPrefs()
+                AppLog.i("backup", "restored $count transactions")
+                mainResult(onDone, null)
+            } catch (e: Exception) {
+                AppLog.e("backup", "import failed", e)
+                mainResult(onDone, e.message ?: "恢复失败")
+            }
+        }
+    }
+
+    private fun reloadSettingsFromPrefs() {
+        _monthStartDay.value = MonthPeriod.clampStartDay(prefs.getInt(KEY_MONTH_START_DAY, 1))
+        _currencySymbol.value = prefs.getString(KEY_CURRENCY_SYMBOL, Money.DEFAULT_SYMBOL)
+            ?: Money.DEFAULT_SYMBOL
+        Money.symbol = _currencySymbol.value
+        _monthlyBudgetAmount.value = prefs.getLong(KEY_MONTHLY_BUDGET, 0L)
+        _dailyBudgetAmount.value = prefs.getLong(KEY_DAILY_BUDGET, 0L)
+        _dailyBudgetMode.value = prefs.getBoolean(KEY_DAILY_BUDGET_MODE, false)
+        _budgetPlans.value = loadBudgetPlans()
+        _categoryBudgetAmounts.value = loadCategoryBudgetAmounts()
+        _categoryBudgetPercents.value = loadCategoryBudgetPercents()
+        _depositGoalCents.value = prefs.getLong(KEY_DEPOSIT_GOAL, 0L)
+        _homeQuickAddEnabled.value = prefs.getBoolean(KEY_HOME_QUICK_ADD, true)
+        _subcategoryRollupMode.value = SubcategoryRollupMode.of(prefs.getString(KEY_SUBCAT_ROLLUP, null))
+    }
+
+    private suspend fun mainResult(callback: (String?) -> Unit, message: String?) {
+        withContext(Dispatchers.Main) { callback(message) }
+    }
+
+    // ---------- 首页显示开关（功能4） ----------
+
+    private val _homeQuickAddEnabled = MutableStateFlow(prefs.getBoolean(KEY_HOME_QUICK_ADD, true))
+
+    /** 首页「记一笔」按钮是否显示（只影响首页，账单页的 + 不受影响） */
+    val homeQuickAddEnabled: StateFlow<Boolean> = _homeQuickAddEnabled
+
+    fun setHomeQuickAddEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_HOME_QUICK_ADD, enabled).apply()
+        _homeQuickAddEnabled.value = enabled
+        AppLog.i("settings", "homeQuickAdd=$enabled")
+    }
+
     private companion object {
         const val PREFS_NAME = "settings"
         const val KEY_CARD_IMAGE = "card_image_uri"
@@ -1370,6 +1977,10 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_CAT_BUDGET_PREFIX = "category_budget_"
         const val KEY_CAT_BUDGET_PCT_PREFIX = "category_budget_pct_"
         const val KEY_CAT_BUDGET_MODE = "category_budget_mode"
+        const val KEY_BUDGET_PLAN_PREFIX = "budget_plan_"
+        const val KEY_DEPOSIT_GOAL = "deposit_goal_cents"
+        const val KEY_SUBCAT_ROLLUP = "subcategory_rollup_mode"
+        const val KEY_HOME_QUICK_ADD = "home_quick_add_enabled"
         const val MODE_PERCENT = "percent"
         const val MODE_AMOUNT = "amount"
     }

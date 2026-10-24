@@ -84,7 +84,7 @@ import com.controleco.app.ui.eco.EcoCategoryTile
 import com.controleco.app.ui.eco.EcoConfirm
 import com.controleco.app.ui.eco.EcoFilterStrip
 import com.controleco.app.ui.eco.EcoGhostButton
-import com.controleco.app.ui.eco.EcoSettingsPill
+import com.controleco.app.ui.eco.EcoIconButton
 import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoSheet
@@ -185,7 +185,7 @@ internal fun headerIndexForDay(
 fun TransactionListScreen(
     vm: LedgerViewModel,
     onEditTransaction: (Long) -> Unit,
-    onOpenSettings: () -> Unit,
+    onOpenCalendar: () -> Unit,
     scrollToTopTick: Int = 0,
 ) {
     val rows by vm.periodRows.collectAsStateWithLifecycle()
@@ -348,7 +348,14 @@ fun TransactionListScreen(
         EcoTopBar(
             micro = "LEDGER / ${month.year}",
             title = "账单",
-            action = { EcoSettingsPill(onClick = onOpenSettings) },
+            titleLeading = {
+                EcoIconButton(
+                    icon = EcoIcons.Calendar,
+                    contentDescription = "日历",
+                    onClick = onOpenCalendar,
+                    size = 30.dp,
+                )
+            },
         )
         BalanceCard(
             mode = mode,

@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.BuildConfig
 import com.controleco.app.capture.CaptureAppCatalog
 import com.controleco.app.data.LedgerViewModel
+import com.controleco.app.data.SubcategoryRollupMode
 import com.controleco.app.ui.common.AnimationPrefs
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.common.SettingsDivider
@@ -115,6 +116,8 @@ fun SettingsScreen(
     val lastCaptureAt by vm.lastCaptureAt.collectAsStateWithLifecycle()
     val pendingCount by vm.pendingCount.collectAsStateWithLifecycle()
     val rules by vm.merchantRules.collectAsStateWithLifecycle(initialValue = emptyList())
+    val homeQuickAdd by vm.homeQuickAddEnabled.collectAsStateWithLifecycle()
+    val rollupMode by vm.subcategoryRollupMode.collectAsStateWithLifecycle()
 
     val listenerGranted = remember(resumeTick) { vm.isListenerGranted() }
     val a11yGranted = remember(resumeTick) { vm.isA11yEnabled() }
@@ -198,6 +201,34 @@ fun SettingsScreen(
                 pillTone = if (permissionsReady) EcoPillTone.Good else EcoPillTone.Warn,
                 showChevron = true,
                 onClick = onOpenPermissions,
+            )
+        }
+
+        SettingsSection(title = "记账", aside = "LEDGER / 记账")
+        SettingsPane {
+            // 只关闭首页的「记一笔」，账单页的 + 不受影响
+            SettingsSwitchRow(
+                title = "首页「记一笔」按钮",
+                subtitle = "关闭后只隐藏首页的快捷记账，账单页仍可记账",
+                checked = homeQuickAdd,
+                onCheckedChange = { vm.setHomeQuickAddEnabled(it) },
+            )
+            SettingsDivider()
+            SettingsRow(
+                title = "二级分类统计口径",
+                subtitle = rollupMode.hint,
+                trail = rollupMode.label,
+                trailColor = MaterialTheme.eco.blue,
+                showChevron = true,
+                onClick = {
+                    vm.setSubcategoryRollupMode(
+                        if (rollupMode == SubcategoryRollupMode.BY_PARENT) {
+                            SubcategoryRollupMode.MERGE_SAME_NAME
+                        } else {
+                            SubcategoryRollupMode.BY_PARENT
+                        },
+                    )
+                },
             )
         }
 

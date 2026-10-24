@@ -76,13 +76,18 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
+import com.controleco.app.data.CategoryTree
+import com.controleco.app.data.SubcategoryRollupMode
 import com.controleco.app.data.budget.Budget
 import com.controleco.app.data.budget.MonthPeriod
+import com.controleco.app.data.db.AccountBalanceRow
+import com.controleco.app.data.db.AccountEntity
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.CategorySumRow
 import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TxType
+import com.controleco.app.data.model.AssetSummary
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.common.rememberReducedMotion
 import com.controleco.app.ui.eco.EcoAutoMoney
@@ -97,7 +102,6 @@ import com.controleco.app.ui.eco.EcoPill
 import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoProgressBar
-import com.controleco.app.ui.eco.EcoSettingsPill
 import com.controleco.app.ui.eco.EcoTopBar
 import com.controleco.app.ui.eco.LocalAnimationsEnabled
 import com.controleco.app.ui.eco.ecoBottomContentPadding
@@ -154,7 +158,6 @@ internal data class CategoryRingData(
 @Composable
 fun HomeScreen(
     vm: LedgerViewModel,
-    onOpenSettings: () -> Unit,
     onOpenCategories: () -> Unit,
 ) {
     val budgetCents by vm.monthlyBudgetCents.collectAsStateWithLifecycle()
@@ -163,7 +166,9 @@ fun HomeScreen(
     val categoryBudgets by vm.categoryBudgets.collectAsStateWithLifecycle()
     val categorySums by vm.homeCategorySums.collectAsStateWithLifecycle()
     val categories by vm.categories.collectAsStateWithLifecycle()
-    val totalDepositCents by vm.totalDepositCents.collectAsStateWithLifecycle()
+    val assetSummary by vm.assetSummary.collectAsStateWithLifecycle()
+    val accounts by vm.accounts.collectAsStateWithLifecycle()
+    val accountBalances by vm.accountBalances.collectAsStateWithLifecycle(initialValue = emptyList())
     val monthStartDay by vm.monthStartDay.collectAsStateWithLifecycle()
     val dailyBudgetMode by vm.dailyBudgetMode.collectAsStateWithLifecycle()
     val dailyBudgetCents by vm.dailyBudgetCents.collectAsStateWithLifecycle()
@@ -172,8 +177,9 @@ fun HomeScreen(
     val spentReady = spentCents
     val todaySpentReady = todaySpentCents
     val sumsReady = categorySums
-    val depositReady = totalDepositCents
-    if (spentReady == null || todaySpentReady == null || sumsReady == null || depositReady == null) return
+    val asset = assetSummary
+    if (spentReady == null || todaySpentReady == null || sumsReady == null || asset == null) return
+    val depositReady = asset.depositCents
 
     var showBudgetSheet by remember { mutableStateOf(false) }
     var todayState by remember { mutableStateOf(LocalDate.now()) }
@@ -259,9 +265,11 @@ fun HomeScreen(
     val latestOnDragEnd by rememberUpdatedState(onDragEnd)
 
     val bars = remember(categoryBudgets, sumsReady, categories, budgetCents, spentReady, period, today) {
+        // 预算只挂在一级分类上：二级分类的支出先并回所属一级分类再算预算
+        val rolled = CategoryTree.rollup(sumsReady, categories, SubcategoryRollupMode.BY_PARENT)
         buildCategoryBars(
             categoryBudgets,
-            sumsReady,
+            rolled,
             categories,
             budgetCents,
             spentReady,
@@ -285,7 +293,6 @@ fun HomeScreen(
             micro = "${period.start.year} / $monthEn 账本",
             title = monthCn,
             low = modeLow,
-            action = { EcoSettingsPill(onClick = onOpenSettings) },
         )
         Box(
             Modifier
@@ -355,9 +362,9 @@ fun HomeScreen(
                     }
                     else -> ModeSpentAndDeposit(
                         spentCents = spentReady,
-                        depositCents = depositReady,
-                        tone = s?.tone ?: Budget.Tone.OK,
-                        trend = trend,
+                        asset = asset,
+                        accounts = accounts,
+                        balances = accountBalances,
                     )
                 }
             }
@@ -844,20 +851,24 @@ private fun ManageButton(onClick: () -> Unit) {
 @Composable
 private fun ModeSpentAndDeposit(
     spentCents: Long,
-    depositCents: Long,
-    tone: Budget.Tone,
-    trend: HomeTrend,
+    asset: AssetSummary,
+    accounts: List<AccountEntity>,
+    balances: List<AccountBalanceRow>,
 ) {
     val c = MaterialTheme.eco
-    // 原型资产页的「本月已花」恒为墨色，只有总存款用蓝色/陶土区分正负
-    Column(Modifier.fillMaxSize()) {
+    // 资产页可下拉：本月已花 → 净资产（存款 / 负债）→ 我的资产账户余额
+    Column(
+        Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+    ) {
         AssetStage(
             label = "本月已花",
             amountCents = spentCents,
             color = c.ink,
             save = false,
             stageColor = c.amber,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.fillMaxWidth().height(214.dp),
         )
         Row(
             Modifier
@@ -873,12 +884,105 @@ private fun ModeSpentAndDeposit(
             Box(Modifier.weight(1f).height(1.dp).background(c.rule))
         }
         AssetStage(
-            label = "总存款",
-            amountCents = depositCents,
-            color = if (depositCents < 0) c.clay else c.blue,
+            label = "净资产",
+            amountCents = asset.netCents,
+            color = if (asset.netCents < 0) c.clay else c.blue,
             save = true,
             stageColor = c.jade,
+            modifier = Modifier.fillMaxWidth().height(214.dp),
+        )
+
+        // 存款 / 负债：净资产 = 存款 − 负债
+        Row(
+            Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            AssetMini("存款", asset.depositCents, c.jade, Modifier.weight(1f))
+            AssetMini("负债", asset.liabilityCents, c.clay, Modifier.weight(1f))
+        }
+
+        Text("我的资产", style = EcoType.SectionTitle, color = c.ink)
+        Spacer(Modifier.height(8.dp))
+        if (accounts.isEmpty()) {
+            Text("还没有账户", style = EcoType.PageNote, color = c.muted)
+        } else {
+            EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
+                Column(Modifier.fillMaxWidth()) {
+                    accounts.forEachIndexed { index, account ->
+                        val bal = balances.firstOrNull { it.accountId == account.id }
+                        val cents = (bal?.initialBalanceCents ?: account.initialBalanceCents) +
+                            (bal?.signedSumCents ?: 0L)
+                        AssetAccountRow(name = account.name, cents = cents)
+                        if (index != accounts.lastIndex) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 15.dp)
+                                    .height(1.dp)
+                                    .background(c.rule),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(18.dp))
+    }
+}
+
+@Composable
+private fun AssetMini(label: String, cents: Long, color: Color, modifier: Modifier = Modifier) {
+    val c = MaterialTheme.eco
+    Column(
+        modifier
+            .clip(RoundedCornerShape(15.dp))
+            .background(c.surface2)
+            .border(1.dp, c.rule, RoundedCornerShape(15.dp))
+            .padding(horizontal = 14.dp, vertical = 11.dp),
+    ) {
+        Text(label, style = EcoType.AssetLabel, color = c.muted)
+        Spacer(Modifier.height(3.dp))
+        EcoAutoMoney(
+            text = Money.formatYuanGroupedFixed(cents),
+            style = EcoType.RowTitle.copy(fontSize = 17.sp, lineHeight = 21.sp),
+            color = if (cents == 0L) c.ink2 else color,
+            modifier = Modifier.fillMaxWidth(),
+            minSize = 12.sp,
+        )
+    }
+}
+
+@Composable
+private fun AssetAccountRow(name: String, cents: Long) {
+    val c = MaterialTheme.eco
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .padding(horizontal = 15.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(categoryColor(MaterialTheme.accBook.categoryPalette, name.ifBlank { "账户" })),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            name,
+            style = EcoType.RowTitle,
+            color = c.ink,
+            maxLines = 1,
+            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            Money.formatYuanGroupedFixed(cents),
+            style = EcoType.BillAmount.copy(fontSize = 13.sp),
+            color = if (cents < 0L) c.clay else c.ink,
+            maxLines = 1,
         )
     }
 }

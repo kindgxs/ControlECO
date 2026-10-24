@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
+import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.EcoIcons
@@ -69,6 +70,9 @@ import com.controleco.app.ui.eco.EcoField
 import com.controleco.app.ui.eco.EcoFilterStrip
 import com.controleco.app.ui.eco.EcoHairline
 import com.controleco.app.ui.eco.EcoPrimaryButton
+import com.controleco.app.ui.eco.EcoRow
+import com.controleco.app.ui.eco.EcoRowDivider
+import com.controleco.app.ui.eco.EcoSheet
 import com.controleco.app.ui.eco.EcoToast
 import com.controleco.app.ui.eco.EcoTopBar
 import com.controleco.app.ui.eco.ecoPressable
@@ -103,11 +107,13 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     var categoryExpanded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
 
-    // 默认选中：第一个账户 + 当前类型的第一个分类
+    // 默认选中：默认账户（没有则第一个）+ 当前类型的第一个分类
     LaunchedEffect(accounts, categories, type) {
-        if (accountId == null) accountId = accounts.firstOrNull()?.id
+        if (accountId == null) {
+            accountId = accounts.firstOrNull { it.isDefault }?.id ?: accounts.firstOrNull()?.id
+        }
         if (categories.firstOrNull { it.id == categoryId }?.type != type) {
-            categoryId = categories.firstOrNull { it.type == type }?.id
+            categoryId = CategoryTree.topLevel(categories, type).firstOrNull()?.id
         }
     }
 
@@ -476,7 +482,7 @@ private fun GuideLink() {
     )
 }
 
-/** 分类：抬头（分类 + tag 图标）+ 38 高的选择条 + 展开后的分类 chips（选完不收起） */
+/** 分类：抬头（分类 + tag 图标）+ 38 高的选择条 + 展开后的分类 chips（长按一级分类可选二级） */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CategoryBlock(
@@ -488,6 +494,11 @@ private fun CategoryBlock(
 ) {
     val c = MaterialTheme.eco
     val shape = RoundedCornerShape(12.dp)
+    var subPickerFor by remember { mutableStateOf<CategoryEntity?>(null) }
+    val tops = remember(categories) {
+        categories.filter { it.parentId == null }.sortedWith(compareBy({ it.sortOrder }, { it.id }))
+    }
+    val selectedLabel = selected?.let { CategoryTree.displayName(categories, it.id) } ?: "请选择分类"
     Column(Modifier.fillMaxWidth()) {
         Row(
             Modifier
@@ -497,6 +508,8 @@ private fun CategoryBlock(
         ) {
             Text("分类", style = TxSectionLabelStyle, color = c.muted)
             Spacer(Modifier.weight(1f))
+            Text("长按一级分类可选二级", style = EcoType.PageNote, color = c.quiet, maxLines = 1)
+            Spacer(Modifier.width(4.dp))
             Icon(EcoIcons.Tag, contentDescription = null, tint = c.blue, modifier = Modifier.size(13.dp))
         }
         Spacer(Modifier.height(6.dp))
@@ -528,7 +541,7 @@ private fun CategoryBlock(
                 Spacer(Modifier.width(8.dp))
             }
             Text(
-                text = selected?.name ?: "请选择分类",
+                text = selectedLabel,
                 style = TxCategoryNameStyle,
                 color = if (selected == null) c.muted else c.ink,
                 maxLines = 1,
@@ -562,14 +575,61 @@ private fun CategoryBlock(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    categories.forEach { category ->
+                    tops.forEach { category ->
                         TxCategoryChip(
                             name = category.name,
-                            selected = category.id == selected?.id,
+                            selected = category.id == selected?.id ||
+                                (selected?.parentId == category.id),
                             onClick = { onSelect(category.id) },
+                            onLongClick = { subPickerFor = category },
                             height = 27.dp,
                         )
                     }
+                }
+            }
+        }
+    }
+
+    // 长按一级分类：选择它下面的二级分类（也可继续记在一级上）
+    val picker = subPickerFor
+    if (picker != null) {
+        val children = CategoryTree.childrenOf(categories, picker.id)
+        EcoSheet(
+            onDismiss = { subPickerFor = null },
+            title = picker.name,
+            subtitle = if (children.isEmpty()) "此分类还没有二级分类" else "选择二级分类，或记在一级分类上",
+        ) {
+            Column {
+                EcoRow(
+                    title = "记在「${picker.name}」",
+                    subtitle = "不使用二级分类",
+                    trail = if (selected?.id == picker.id) "已选" else null,
+                    trailColor = c.blue,
+                    onClick = {
+                        onSelect(picker.id)
+                        subPickerFor = null
+                    },
+                )
+                children.forEach { child ->
+                    EcoRowDivider()
+                    EcoRow(
+                        title = child.name,
+                        subtitle = CategoryTree.displayName(categories, child.id),
+                        trail = if (selected?.id == child.id) "已选" else null,
+                        trailColor = c.blue,
+                        onClick = {
+                            onSelect(child.id)
+                            subPickerFor = null
+                        },
+                    )
+                }
+                if (children.isEmpty()) {
+                    EcoRowDivider()
+                    EcoRow(
+                        title = "去「分类」页长按添加二级分类",
+                        subtitle = "二级分类只占所属一级分类的预算",
+                        onClick = null,
+                    )
                 }
             }
         }

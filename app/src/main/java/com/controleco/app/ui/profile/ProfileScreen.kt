@@ -1,7 +1,5 @@
 package com.controleco.app.ui.profile
 
-import android.content.Intent
-import android.net.Uri
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -88,6 +86,7 @@ import com.controleco.app.ui.eco.EcoCategoryTile
 import com.controleco.app.ui.eco.EcoDialog
 import com.controleco.app.ui.eco.EcoGhostButton
 import com.controleco.app.ui.eco.EcoHeroCard
+import com.controleco.app.ui.eco.EcoIconTile
 import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoRow
@@ -113,10 +112,6 @@ import com.controleco.app.ui.theme.onHeroMuted
 import com.controleco.app.util.Money
 import java.time.LocalDate
 import kotlin.math.roundToInt
-
-/** 开源仓库（个人页「更多」里的一行，点按用系统浏览器打开） */
-private const val GITHUB_REPO_PATH = "ArrogHie/ControlECO"
-private const val GITHUB_REPO_URL = "https://github.com/$GITHUB_REPO_PATH"
 
 // ---- 版式常量：按原型最终级联值（hero 197 / duo 161 / mid 150 / bottom 66）----
 private val HERO_HEIGHT = 197.dp
@@ -237,7 +232,9 @@ fun ProfileScreen(
     onOpenPending: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenCategories: () -> Unit,
-    onOpenReward: () -> Unit,
+    onOpenPlan: () -> Unit,
+    onOpenMonthlyBudget: () -> Unit,
+    onOpenDeposit: () -> Unit,
 ) {
     val context = LocalContext.current
     val budget by vm.monthlyBudgetCents.collectAsStateWithLifecycle()
@@ -248,6 +245,8 @@ fun ProfileScreen(
     val dailyBudgetMode by vm.dailyBudgetMode.collectAsStateWithLifecycle()
     val dailyBudgetCents by vm.dailyBudgetCents.collectAsStateWithLifecycle()
     val categories by vm.categories.collectAsStateWithLifecycle()
+    val depositGoal by vm.depositGoalCents.collectAsStateWithLifecycle()
+    val currentSaving by vm.currentMonthSaving.collectAsStateWithLifecycle()
 
     // 与首页同口径：本月净支出未到位前整页不画（避免预算卡先显示 0 再跳数）
     val spentReady = spent ?: return
@@ -257,7 +256,6 @@ fun ProfileScreen(
 
     var showBudgetSheet by remember { mutableStateOf(false) }
     var showCurrencySheet by remember { mutableStateOf(false) }
-    var showAbout by remember { mutableStateOf(false) }
     var showTheme by remember { mutableStateOf(false) }
     var showMonthStart by remember { mutableStateOf(false) }
 
@@ -265,11 +263,6 @@ fun ProfileScreen(
     // 月预算模式下是月预算折算的日均（月预算 ÷ 本期天数，四舍五入），
     // 这样改完月预算卡片会立刻跟着变，不会停在旧的日预算上。
     val tileDailyCents = if (dailyBudgetMode) dailyBudgetCents else Budget.dailyEquivalent(budget, period.days)
-
-    // 开源仓库链接：用系统浏览器打开（没有浏览器时静默失败，不影响其它功能）
-    val openRepo: () -> Unit = {
-        runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL))) }
-    }
 
     Column(Modifier.fillMaxSize()) {
         EcoTopBar(micro = "PERSONAL SPACE", title = "我的")
@@ -292,7 +285,7 @@ fun ProfileScreen(
                     currency = currency,
                     onCurrency = { showCurrencySheet = true },
                     onOpenAccount = onOpenAccount,
-                    onManageBudget = { showBudgetSheet = true },
+                    onManageBudget = onOpenMonthlyBudget,
                 )
             }
 
@@ -301,8 +294,8 @@ fun ProfileScreen(
                 dailyBudgetCents = tileDailyCents,
                 pendingCount = pendingCount,
                 onModeChange = { vm.setDailyBudgetMode(it) },
-                // 点卡片编辑当前模式对应的预算（月预算 → 月预算 sheet，日预算 → 日预算 sheet）
-                onManageBudget = { showBudgetSheet = true },
+                // 点卡片编辑当前模式对应的预算（月预算 → 按月预算页，日预算 → 日预算 sheet）
+                onManageBudget = { if (dailyBudgetMode) showBudgetSheet = true else onOpenMonthlyBudget() },
                 onOpenPending = onOpenPending,
             )
 
@@ -315,11 +308,18 @@ fun ProfileScreen(
             )
 
             BottomRow(
-                onOpenImport = onOpenImport,
-                onReward = onOpenReward,
-                onOpenRepo = openRepo,
+                onOpenPlan = onOpenPlan,
+                onOpenBackup = onOpenImport,
                 onTheme = { showTheme = true },
             )
+
+            EcoArrival(randomDelay = true, delayMillis = 700, turn = 1.8f) {
+                DepositEntry(
+                    goalCents = depositGoal,
+                    savingCents = currentSaving?.savingCents ?: 0L,
+                    onClick = onOpenDeposit,
+                )
+            }
         }
     }
 
@@ -342,10 +342,6 @@ fun ProfileScreen(
             onPick = { vm.setCurrencySymbol(it); showCurrencySheet = false },
             onDismiss = { showCurrencySheet = false },
         )
-    }
-
-    if (showAbout) {
-        AboutDialog(onOpenRepo = openRepo, onDismiss = { showAbout = false })
     }
 
     if (showTheme) {
@@ -1151,14 +1147,12 @@ private fun SettingsCard(onClick: () -> Unit, modifier: Modifier = Modifier) {
     }
 }
 
-// ---------- 4. 底排：导入 / 打赏 / 关于 ----------
-
+// ---------- 4. 底排：分期·周期 / 主题色 / 备份还原 ----------
 
 @Composable
 private fun BottomRow(
-    onOpenImport: () -> Unit,
-    onReward: () -> Unit,
-    onOpenRepo: () -> Unit,
+    onOpenPlan: () -> Unit,
+    onOpenBackup: () -> Unit,
     onTheme: () -> Unit,
 ) {
     BoxWithConstraints(
@@ -1166,8 +1160,7 @@ private fun BottomRow(
     ) {
         val gap = 8.dp
 
-        // 三个圆始终相同大小
-        // 窄屏自动缩小，给导入账单保留至少约 94dp
+        // 两个圆始终相同大小；窄屏自动缩小，给「分期·周期」胶囊保留至少约 94dp
         val circleSize = (
             (maxWidth - 94.dp - gap * 3f) / 3f
         ).coerceIn(48.dp, 66.dp)
@@ -1180,36 +1173,25 @@ private fun BottomRow(
             verticalAlignment = Alignment.CenterVertically
         ) {
 
-            // 1. GitHub
+            // 1. 分期·周期：胶囊形
             EcoArrival(
                 randomDelay = true,
                 delayMillis = 560,
-                turn = -2.4f,
-                modifier = Modifier.size(circleSize)
+                turn = 2.2f,
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxHeight()
             ) {
-                GitHubOrb(
-                    onClick = onOpenRepo,
+                PlanTile(
+                    onClick = onOpenPlan,
                     modifier = Modifier.fillMaxSize()
                 )
             }
 
-            // 2. 打赏
+            // 2. 主题色
             EcoArrival(
                 randomDelay = true,
                 delayMillis = 610,
-                turn = 2.4f,
-                modifier = Modifier.size(circleSize)
-            ) {
-                RewardTile(
-                    onClick = onReward,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            // 3. 主题
-            EcoArrival(
-                randomDelay = true,
-                delayMillis = 650,
                 turn = -2.4f,
                 modifier = Modifier.size(circleSize)
             ) {
@@ -1219,17 +1201,15 @@ private fun BottomRow(
                 )
             }
 
-            // 4. 导入账单：保留胶囊形
+            // 3. 备份还原
             EcoArrival(
                 randomDelay = true,
-                delayMillis = 680,
-                turn = 2.2f,
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
+                delayMillis = 650,
+                turn = 2.4f,
+                modifier = Modifier.size(circleSize)
             ) {
-                ImportTile(
-                    onClick = onOpenImport,
+                BackupTile(
+                    onClick = onOpenBackup,
                     modifier = Modifier.fillMaxSize()
                 )
             }
@@ -1237,30 +1217,125 @@ private fun BottomRow(
     }
 }
 
-/** 开源仓库：深墨圆钮（原型 github-orb），点击直接开系统浏览器。 */
+/** 分期·周期：横向主 CTA 胶囊（沿用原导入账单胶囊的视觉）。 */
 @Composable
-private fun GitHubOrb(onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun PlanTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
     val c = MaterialTheme.eco
-    // 深墨圆钮：用中性墨色（白主题下是石墨，冷调主题下是深青墨），不再写死深青
-    val orbBg = lerp(c.ink, Color.Black, 0.55f)
     Box(
         modifier
-            .shadow(1.5.dp, CircleShape, ambientColor = Color.Transparent, spotColor = c.ink.copy(alpha = 0.25f))
-            .cardPlate(CircleShape, lerp(orbBg, Color.Black, 0.55f).copy(alpha = 0.85f), offsetX = 1.5.dp, offsetY = 3.4.dp)
-            .clip(CircleShape)
-            .background(orbBg)
-            .cardInset(
-                shape = CircleShape,
-                topColor = Color.White.copy(alpha = 0.18f),
-                topHeight = 2.dp,
-                bottomColor = Color.Black.copy(alpha = 0.24f),
-                band = 14.dp,
+            .shadow(
+                elevation = 2.dp,
+                shape = RoundedCornerShape(50),
+                clip = false,
+                ambientColor = Color.Transparent,
+                spotColor = c.heroB.copy(alpha = 0.4f),
             )
-            .border(1.dp, Color.White.copy(alpha = 0.14f), CircleShape)
+            .clip(RoundedCornerShape(50))
+            .background(Brush.linearGradient(listOf(c.heroC, c.heroB), start = Offset.Zero, end = Offset.Infinite))
+            .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(50))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        GitHubOctocat()
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(EcoIcons.Clock, contentDescription = null, tint = c.onHero, modifier = Modifier.size(15.dp))
+            Spacer(Modifier.width(6.dp))
+            Text(
+                "分期·周期",
+                style = EcoType.Chip.copy(fontSize = 12.5.sp, fontWeight = FontWeight(800), letterSpacing = 0.sp),
+                color = c.onHero,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/** 备份还原：hero 渐变圆钮，下载图标 + 「备份还原」。 */
+@Composable
+private fun BackupTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    val c = MaterialTheme.eco
+    Box(
+        modifier
+            .shadow(
+                elevation = 3.dp,
+                shape = CircleShape,
+                clip = false,
+                ambientColor = Color.Transparent,
+                spotColor = c.heroB.copy(alpha = 0.42f),
+            )
+            .clip(CircleShape)
+            .background(Brush.linearGradient(listOf(c.heroC, c.heroB), start = Offset.Zero, end = Offset.Infinite))
+            .border(1.dp, Color.White.copy(alpha = 0.2f), CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Icon(
+                EcoIcons.Download,
+                contentDescription = "备份还原",
+                tint = c.onHero,
+                modifier = Modifier.size(18.dp),
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "备份还原",
+                style = EcoType.Micro.copy(fontSize = 8.5.sp, fontWeight = FontWeight(800), letterSpacing = 0.sp),
+                color = c.onHero,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/** 存款入口：本月实际新增 / 每月目标，点击进入存款页。 */
+@Composable
+private fun DepositEntry(
+    goalCents: Long,
+    savingCents: Long,
+    onClick: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    EcoPane(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(18.dp),
+    ) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .padding(horizontal = 13.dp, vertical = 11.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            EcoIconTile(
+                icon = EcoIcons.Wallet,
+                tint = c.jade,
+                size = 34.dp,
+                radius = 11.dp,
+                iconSize = 17.dp,
+            )
+            Spacer(Modifier.width(10.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    "存款",
+                    style = EcoType.RowTitle.copy(fontSize = 13.5.sp, fontWeight = FontWeight.Bold),
+                    color = c.ink,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "本月新增 ${Money.formatYuanGrouped(savingCents)}" +
+                        if (goalCents > 0L) " / 目标 ${Money.formatYuanGrouped(goalCents)}" else " · 未设目标",
+                    style = EcoType.PageNote.copy(fontSize = 9.sp),
+                    color = c.muted,
+                    maxLines = 1,
+                )
+            }
+            Icon(
+                EcoIcons.Chev,
+                contentDescription = null,
+                tint = c.quiet,
+                modifier = Modifier.size(13.dp),
+            )
+        }
     }
 }
 
@@ -1305,263 +1380,6 @@ private fun AccentTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
             tint = Color.White,
             modifier = Modifier.size(28.dp),
         )
-    }
-}
-
-/** 导入账单：横向主 CTA 胶囊（原型 import-tile）。 */
-@Composable
-private fun ImportTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val c = MaterialTheme.eco
-    Box(
-        modifier
-            .shadow(
-                elevation = 2.dp,
-                shape = RoundedCornerShape(50),
-                clip = false,
-                ambientColor = Color.Transparent,
-                spotColor = c.heroB.copy(alpha = 0.4f),
-            )
-            .clip(RoundedCornerShape(50))
-            .background(Brush.linearGradient(listOf(c.heroC, c.heroB), start = Offset.Zero, end = Offset.Infinite))
-            .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(50))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(EcoIcons.Download, contentDescription = null, tint = c.onHero, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(6.dp))
-            Text(
-                "导入账单",
-                style = EcoType.Chip.copy(fontSize = 12.5.sp, fontWeight = FontWeight(800), letterSpacing = 0.sp),
-                color = c.onHero,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-/** 账单导入：63 的圆形胶囊（hero 渐变），下载/文件图标 + 「导入账单」。 */
-@Composable
-private fun ImportOrb(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val c = MaterialTheme.eco
-    Box(
-        modifier
-            .shadow(
-                elevation = 3.dp,
-                shape = CircleShape,
-                clip = false,
-                ambientColor = Color.Transparent,
-                spotColor = c.heroB.copy(alpha = 0.42f),
-            )
-            .clip(CircleShape)
-            .background(Brush.linearGradient(listOf(c.heroC, c.heroB), start = Offset.Zero, end = Offset.Infinite))
-            .border(1.dp, Color.White.copy(alpha = 0.2f), CircleShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                EcoIcons.File,
-                contentDescription = "账单导入",
-                tint = c.onHero,
-                modifier = Modifier.size(19.dp),
-            )
-            Spacer(Modifier.height(3.dp))
-            Text(
-                "导入账单",
-                style = EcoType.Micro.copy(fontSize = 8.5.sp, fontWeight = FontWeight(800), letterSpacing = 0.sp),
-                color = c.onHero,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-/** 打赏：陶土渐变胶囊，咖啡 + 打赏。 */
-@Composable
-private fun RewardTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val c = MaterialTheme.eco
-    Box(
-        modifier
-            .shadow(
-                elevation = 2.dp,
-                shape = CircleShape,
-                clip = false,
-                ambientColor = Color.Transparent,
-                spotColor = c.clay.copy(alpha = 0.30f),
-            )
-            .cardPlate(CircleShape, lerp(c.clay, Color.Black, 0.42f).copy(alpha = 0.70f), offsetX = 1.5.dp, offsetY = 3.4.dp)
-            .clip(CircleShape)
-            .background(
-                // 打赏固定陶红：产品口径指定，不随主题变（与设置卡的暖金同理）
-                Brush.linearGradient(
-                    listOf(lerp(c.clay, Color.White, 0.18f), c.clay),
-                    start = Offset.Zero,
-                    end = Offset.Infinite,
-                ),
-            )
-            .cardInset(
-                shape = CircleShape,
-                topColor = Color.White.copy(alpha = 0.42f),
-                topHeight = 2.dp,
-                bottomColor = lerp(c.clay, Color.Black, 0.42f).copy(alpha = 0.24f),
-                band = 14.dp,
-            )
-            .border(1.dp, Color.White.copy(alpha = 0.22f), CircleShape)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Icon(
-                EcoIcons.Coffee,
-                contentDescription = null,
-                tint = lerp(c.clay, Color.White, 0.90f),
-                modifier = Modifier.size(16.dp),
-            )
-            Spacer(Modifier.height(1.dp))
-            Text(
-                "打赏",
-                style = EcoType.Chip.copy(fontSize = 10.5.sp, fontWeight = FontWeight(800), letterSpacing = 0.sp),
-                color = lerp(c.clay, Color.White, 0.92f),
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-/** 关于：与导入同族 hero 渐变，信息图标 + 关于。 */
-@Composable
-private fun AboutTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
-    val c = MaterialTheme.eco
-    Box(
-        modifier
-            .shadow(
-                elevation = 2.dp,
-                shape = RoundedCornerShape(50),
-                clip = false,
-                ambientColor = Color.Transparent,
-                spotColor = c.heroB.copy(alpha = 0.4f),
-            )
-            .clip(RoundedCornerShape(50))
-            .background(Brush.linearGradient(listOf(c.heroC, c.heroB), start = Offset.Zero, end = Offset.Infinite))
-            .border(1.dp, Color.White.copy(alpha = 0.2f), RoundedCornerShape(50))
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                EcoIcons.Info,
-                contentDescription = null,
-                tint = c.onHero,
-                modifier = Modifier.size(17.dp),
-            )
-            Spacer(Modifier.width(6.dp))
-            Text(
-                "关于",
-                style = EcoType.Chip.copy(fontSize = 15.sp, fontWeight = FontWeight(800), letterSpacing = 0.sp),
-                color = c.onHero,
-                maxLines = 1,
-            )
-        }
-    }
-}
-
-// ---------- 5. 更多（主题色 / 货币 / 仓库 / 版本 / 关于） ----------
-
-@Composable
-private fun MoreSection(
-    currency: String,
-    accent: EcoAccent,
-    onPickAccent: (EcoAccent) -> Unit,
-    onCurrency: () -> Unit,
-    onOpenRepo: () -> Unit,
-    onAbout: () -> Unit,
-) {
-    Column(Modifier.fillMaxWidth()) {
-        EcoSectionHead(title = "更多", aside = "MORE")
-        EcoPane {
-            Column(Modifier.fillMaxWidth()) {
-                ThemeRow(selected = accent, onPick = onPickAccent)
-                EcoRowDivider()
-                EcoRow(
-                    title = "货币符号",
-                    trail = "$currency  ${currencyName(currency)}",
-                    onClick = onCurrency,
-                    showChevron = true,
-                )
-                EcoRowDivider()
-                EcoRow(
-                    title = "GitHub 仓库",
-                    subtitle = GITHUB_REPO_PATH,
-                    icon = EcoIcons.Link,
-                    onClick = onOpenRepo,
-                    showChevron = true,
-                )
-                EcoRowDivider()
-                EcoRow(
-                    title = "版本",
-                    subtitle = if (BuildConfig.DEBUG) "debug 构建" else "release 构建",
-                    trail = "v${BuildConfig.VERSION_NAME}",
-                )
-                EcoRowDivider()
-                EcoRow(
-                    title = "关于易控钱包",
-                    icon = EcoIcons.Info,
-                    onClick = onAbout,
-                    showChevron = true,
-                )
-            }
-        }
-    }
-}
-
-/** 「更多」弹层：主题色 / 货币 / 仓库 / 版本 / 关于，底排彩虹钮打开。 */
-@Composable
-private fun MoreSheet(
-    currency: String,
-    accent: EcoAccent,
-    onPickAccent: (EcoAccent) -> Unit,
-    onCurrency: () -> Unit,
-    onOpenRepo: () -> Unit,
-    onAbout: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    EcoSheet(
-        onDismiss = onDismiss,
-        title = "更多",
-        subtitle = "主题色 / 货币符号 / 开源仓库 / 版本",
-    ) {
-        Column(Modifier.fillMaxWidth()) {
-            ThemeRow(selected = accent, onPick = onPickAccent)
-            EcoRowDivider()
-            EcoRow(
-                title = "货币符号",
-                trail = "$currency  ${currencyName(currency)}",
-                onClick = onCurrency,
-                showChevron = true,
-            )
-            EcoRowDivider()
-            EcoRow(
-                title = "GitHub 仓库",
-                subtitle = GITHUB_REPO_PATH,
-                icon = EcoIcons.Link,
-                onClick = onOpenRepo,
-                showChevron = true,
-            )
-            EcoRowDivider()
-            EcoRow(
-                title = "版本",
-                subtitle = if (BuildConfig.DEBUG) "debug 构建" else "release 构建",
-                trail = "v${BuildConfig.VERSION_NAME}",
-            )
-            EcoRowDivider()
-            EcoRow(
-                title = "关于易控钱包",
-                icon = EcoIcons.Info,
-                onClick = onAbout,
-                showChevron = true,
-            )
-        }
     }
 }
 
@@ -1728,92 +1546,6 @@ private fun CurrencySheet(current: String, onPick: (String) -> Unit, onDismiss: 
             }
         }
         Spacer(Modifier.height(6.dp))
-    }
-}
-
-/** 打赏：独立页（路由 `reward`），见 `ui/profile/RewardScreen.kt`。 */
-
-/** 关于：品牌块 + 版本/构建/仓库三行 + 隐私一行 + 打开仓库。 */
-@Composable
-private fun AboutDialog(onOpenRepo: () -> Unit, onDismiss: () -> Unit) {
-    val c = MaterialTheme.eco
-    EcoDialog(onDismiss = onDismiss) {
-        Column {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(46.dp)
-                        .clip(RoundedCornerShape(15.dp))
-                        .background(
-                            Brush.linearGradient(
-                                // 品牌块跟随主题（原来是固定的青绿，任何主题下都是绿的）
-                                listOf(c.accentGradA, c.accentGradC),
-                                start = Offset.Zero,
-                                end = Offset.Infinite,
-                            ),
-                        ),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        EcoIcons.Leaf,
-                        contentDescription = null,
-                        tint = c.onAccent,
-                        modifier = Modifier.size(24.dp),
-                    )
-                }
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text("易控钱包", style = EcoType.ModalTitle, color = c.ink, maxLines = 1)
-                    Spacer(Modifier.height(1.dp))
-                    Text(
-                        "本地记账 / 账单导入 / 自动捕获",
-                        style = EcoType.PageNote,
-                        color = c.muted,
-                        maxLines = 1,
-                    )
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            AboutLine("版本号", "v${BuildConfig.VERSION_NAME}（${BuildConfig.VERSION_CODE}）")
-            AboutLine("构建类型", if (BuildConfig.DEBUG) "debug" else "release")
-            AboutLine("开源仓库", GITHUB_REPO_PATH)
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.Top) {
-                Icon(
-                    EcoIcons.Shield,
-                    contentDescription = null,
-                    tint = c.jade,
-                    modifier = Modifier.size(14.dp),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "只写本机数据库：不联网、不上传，无云端账号与第三方统计。",
-                    style = EcoType.PageNote,
-                    color = c.muted,
-                )
-            }
-            Spacer(Modifier.height(16.dp))
-            EcoPrimaryButton(
-                text = "在浏览器中打开仓库",
-                onClick = onOpenRepo,
-                leading = EcoIcons.External,
-                height = 40.dp,
-            )
-            Spacer(Modifier.height(8.dp))
-            EcoGhostButton(text = "关闭", onClick = onDismiss, height = 40.dp)
-        }
-    }
-}
-
-@Composable
-private fun AboutLine(label: String, value: String) {
-    val c = MaterialTheme.eco
-    Row(
-        Modifier.fillMaxWidth().padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = EcoType.RowSub, color = c.muted, modifier = Modifier.weight(1f), maxLines = 1)
-        Text(value, style = EcoType.RowTrail, color = c.ink, maxLines = 1)
     }
 }
 

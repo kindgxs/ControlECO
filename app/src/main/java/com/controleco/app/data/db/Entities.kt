@@ -31,6 +31,15 @@ data class AccountEntity(
     val initialBalanceCents: Long = 0,
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
+    /** 默认账户（记账时优先选中；全局最多一个，0 = 否） */
+    @ColumnInfo(defaultValue = "0")
+    val isDefault: Boolean = false,
+    /** 信用卡额度（分）：0 = 非信用卡 / 未设置；共用额度组内所有卡共用这个上限 */
+    @ColumnInfo(defaultValue = "0")
+    val creditLimitCents: Long = 0,
+    /** 共用额度组：0 = 不共用；同组的账户视为同一张卡的额度/欠款（值 = 组内任意账户 id） */
+    @ColumnInfo(defaultValue = "0")
+    val sharedGroupId: Long = 0,
 )
 
 @Entity(tableName = "categories")
@@ -45,6 +54,9 @@ data class CategoryEntity(
      */
     @ColumnInfo(defaultValue = "")
     val icon: String = "",
+    /** 二级分类：所属一级分类 id；null = 一级分类（只支持两级） */
+    @ColumnInfo(defaultValue = "NULL")
+    val parentId: Long? = null,
 )
 
 @Entity(
@@ -97,6 +109,55 @@ data class TransactionEntity(
      */
     @ColumnInfo(defaultValue = "")
     val flowId: String = "",
+    /** 只记账、不扣资产（分期/周期记账的「已记期数」可选）：余额统计跳过该笔 */
+    @ColumnInfo(defaultValue = "0")
+    val excludeFromAssets: Boolean = false,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/** 信用卡分期计划：按「期」生成账单，每期 = 本金 + 利息（见 InstallmentMath） */
+@Entity(tableName = "installment_plans")
+data class InstallmentPlanEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val title: String,
+    val accountId: Long,
+    val categoryId: Long,
+    /** 分期总金额（本金，分） */
+    val totalPrincipalCents: Long,
+    /** 总利息（分）：0 = 免息 */
+    @ColumnInfo(defaultValue = "0")
+    val totalInterestCents: Long = 0,
+    val periods: Int,
+    val firstDateMillis: Long,
+    /** true = 每期入账同时扣资产；false = 只记账（余额不变） */
+    @ColumnInfo(defaultValue = "1")
+    val deductAsset: Boolean = true,
+    val note: String = "",
+    /** 已记期数（0..periods）：下一期的序号 = 已记期数 + 1 */
+    @ColumnInfo(defaultValue = "0")
+    val postedPeriods: Int = 0,
+    val createdAt: Long = System.currentTimeMillis(),
+)
+
+/** 周期记账计划：按天/周/月自动入账 */
+@Entity(tableName = "recurring_plans")
+data class RecurringPlanEntity(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val title: String,
+    val type: TxType,
+    val amountCents: Long,
+    val categoryId: Long,
+    val accountId: Long,
+    /** DAILY / WEEKLY / MONTHLY */
+    val frequency: String,
+    val firstDateMillis: Long,
+    /** 下次入账时间（毫秒） */
+    val nextDateMillis: Long,
+    @ColumnInfo(defaultValue = "1")
+    val deductAsset: Boolean = true,
+    @ColumnInfo(defaultValue = "0")
+    val autoPost: Boolean = false,
+    val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
 )
 

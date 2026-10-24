@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlin.math.roundToInt
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -43,9 +44,14 @@ import com.controleco.app.capture.CapturePermissions
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.ui.accounts.AccountsScreen
 import com.controleco.app.ui.accounts.CategoriesScreen
+import com.controleco.app.ui.backup.BackupScreen
+import com.controleco.app.ui.budget.MonthBudgetScreen
+import com.controleco.app.ui.calendar.CalendarScreen
+import com.controleco.app.ui.plan.PlanScreen
 import com.controleco.app.ui.common.PermissionReminderDialog
 import com.controleco.app.ui.debug.CaptureLogScreen
 import com.controleco.app.ui.debug.CaptureTraceScreen
+import com.controleco.app.ui.deposit.DepositScreen
 import com.controleco.app.ui.home.HomeScreen
 import com.controleco.app.ui.imports.ImportScreen
 import com.controleco.app.ui.keepalive.KeepAliveScreen
@@ -189,12 +195,21 @@ fun AccBookNav(
                 onEditTransaction = { id -> navController.navigate("edit/$id") },
                 onOpenPending = { navController.navigate("pending") },
                 onOpenAccount = { navController.navigate("settings/account") },
-                onOpenImport = { navController.navigate("settings/import") },
+                onOpenImport = { navController.navigate("backup") },
                 onOpenSettings = { navController.navigate("settings") },
                 onOpenCategories = { navController.navigate("categories") },
                 onOpenReward = { navController.navigate("reward") },
+                onOpenCalendar = { navController.navigate("calendar") },
+                onOpenPlan = { navController.navigate("plan") },
+                onOpenBudget = { navController.navigate("budget") },
+                onOpenDeposit = { navController.navigate("deposit") },
             )
         }
+        composable("calendar") { CalendarScreen(vm = vm, onBack = { navController.popBackStack() }) }
+        composable("plan") { PlanScreen(vm = vm, onBack = { navController.popBackStack() }) }
+        composable("backup") { BackupScreen(vm = vm, onBack = { navController.popBackStack() }) }
+        composable("budget") { MonthBudgetScreen(vm = vm, onBack = { navController.popBackStack() }) }
+        composable("deposit") { DepositScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("quickAdd") { QuickAddScreen(vm = vm, onBack = { navController.popBackStack() }) }
         composable("edit/{txId}") { entry ->
             val txId = entry.arguments?.getString("txId")?.toLongOrNull() ?: -1L
@@ -316,11 +331,17 @@ private fun MainScaffold(
     onOpenSettings: () -> Unit,
     onOpenCategories: () -> Unit,
     onOpenReward: () -> Unit,
+    onOpenCalendar: () -> Unit,
+    onOpenPlan: () -> Unit,
+    onOpenBudget: () -> Unit,
+    onOpenDeposit: () -> Unit,
 ) {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     // 再次点击当前标签 → 计数 +1，由页面自己"回到顶部"（列表/滚动页通用）
     var reenterTick by rememberSaveable { mutableIntStateOf(0) }
     val tabStates = rememberSaveableStateHolder()
+    // 首页「记一笔」可在设置里关闭；这里只管首页的 FAB，账单页不受影响
+    val homeQuickAdd by vm.homeQuickAddEnabled.collectAsStateWithLifecycle()
 
     // 切 tab 只保留当前页：旧页立即移除，新页整体上移 10dp 就位。
     // 不做两页叠加/整页 alpha：那会让旧页透出来（重影），还要多一层全屏离屏缓冲，明显掉帧。
@@ -357,6 +378,10 @@ private fun MainScaffold(
                     onOpenSettings = onOpenSettings,
                     onOpenCategories = onOpenCategories,
                     onOpenReward = onOpenReward,
+                    onOpenCalendar = onOpenCalendar,
+                    onOpenPlan = onOpenPlan,
+                    onOpenBudget = onOpenBudget,
+                    onOpenDeposit = onOpenDeposit,
                 )
             }
         }
@@ -374,7 +399,7 @@ private fun MainScaffold(
         )
         // FAB 只属于首页/账单：跟当前页走，切换时淡出+缩小，不要突然消失
         AnimatedVisibility(
-            visible = tab == 0 || tab == 1,
+            visible = (tab == 0 && homeQuickAdd) || tab == 1,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 19.dp, bottom = ecoFabBottomOffset()),
@@ -401,17 +426,20 @@ private fun TabPage(
     onOpenSettings: () -> Unit,
     onOpenCategories: () -> Unit,
     onOpenReward: () -> Unit,
+    onOpenCalendar: () -> Unit,
+    onOpenPlan: () -> Unit,
+    onOpenBudget: () -> Unit,
+    onOpenDeposit: () -> Unit,
 ) {
     when (tab) {
         0 -> HomeScreen(
             vm = vm,
-            onOpenSettings = onOpenSettings,
             onOpenCategories = onOpenCategories,
         )
         1 -> TransactionListScreen(
             vm = vm,
             onEditTransaction = onEditTransaction,
-            onOpenSettings = onOpenSettings,
+            onOpenCalendar = onOpenCalendar,
             scrollToTopTick = reenterTick,
         )
         2 -> StatsScreen(vm = vm, scrollToTopTick = reenterTick)
@@ -422,7 +450,9 @@ private fun TabPage(
             onOpenPending = onOpenPending,
             onOpenSettings = onOpenSettings,
             onOpenCategories = onOpenCategories,
-            onOpenReward = onOpenReward,
+            onOpenPlan = onOpenPlan,
+            onOpenMonthlyBudget = onOpenBudget,
+            onOpenDeposit = onOpenDeposit,
         )
     }
 }

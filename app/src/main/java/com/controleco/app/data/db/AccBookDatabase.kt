@@ -16,8 +16,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         PendingTransactionEntity::class,
         CaptureTraceEntity::class,
         MerchantRuleEntity::class,
+        InstallmentPlanEntity::class,
+        RecurringPlanEntity::class,
     ],
-    version = 13,
+    version = 14,
     exportSchema = true,
 )
 abstract class AccBookDatabase : RoomDatabase() {
@@ -29,6 +31,7 @@ abstract class AccBookDatabase : RoomDatabase() {
     abstract fun pendingDao(): PendingDao
     abstract fun traceDao(): TraceDao
     abstract fun merchantRuleDao(): MerchantRuleDao
+    abstract fun planDao(): PlanDao
 
     companion object {
         /** v2：交易表新增退款标记列 */
@@ -267,6 +270,56 @@ abstract class AccBookDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v14：二级分类 / 账户默认与共用额度 / 不扣资产标记 / 分期与周期计划表。
+         * 全部是新增列或新增表，历史数据原样保留。
+         */
+        private val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE categories ADD COLUMN parentId INTEGER")
+                db.execSQL("ALTER TABLE accounts ADD COLUMN isDefault INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE accounts ADD COLUMN creditLimitCents INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE accounts ADD COLUMN sharedGroupId INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE transactions ADD COLUMN excludeFromAssets INTEGER NOT NULL DEFAULT 0")
+                // 老账户：第一个设为默认，保证记账有稳定的首选账户
+                db.execSQL(
+                    "UPDATE accounts SET isDefault = 1 WHERE id = (" +
+                        "SELECT MIN(id) FROM accounts)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `installment_plans` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`title` TEXT NOT NULL, " +
+                        "`accountId` INTEGER NOT NULL, " +
+                        "`categoryId` INTEGER NOT NULL, " +
+                        "`totalPrincipalCents` INTEGER NOT NULL, " +
+                        "`totalInterestCents` INTEGER NOT NULL DEFAULT 0, " +
+                        "`periods` INTEGER NOT NULL, " +
+                        "`firstDateMillis` INTEGER NOT NULL, " +
+                        "`deductAsset` INTEGER NOT NULL DEFAULT 1, " +
+                        "`note` TEXT NOT NULL, " +
+                        "`postedPeriods` INTEGER NOT NULL DEFAULT 0, " +
+                        "`createdAt` INTEGER NOT NULL)",
+                )
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `recurring_plans` (" +
+                        "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                        "`title` TEXT NOT NULL, " +
+                        "`type` TEXT NOT NULL, " +
+                        "`amountCents` INTEGER NOT NULL, " +
+                        "`categoryId` INTEGER NOT NULL, " +
+                        "`accountId` INTEGER NOT NULL, " +
+                        "`frequency` TEXT NOT NULL, " +
+                        "`firstDateMillis` INTEGER NOT NULL, " +
+                        "`nextDateMillis` INTEGER NOT NULL, " +
+                        "`deductAsset` INTEGER NOT NULL DEFAULT 1, " +
+                        "`autoPost` INTEGER NOT NULL DEFAULT 0, " +
+                        "`note` TEXT NOT NULL, " +
+                        "`createdAt` INTEGER NOT NULL)",
+                )
+            }
+        }
+
         @Volatile
         private var instance: AccBookDatabase? = null
 
@@ -280,7 +333,7 @@ abstract class AccBookDatabase : RoomDatabase() {
                     .addMigrations(
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                         MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                        MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13,
+                        MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
                     )
                     .build().also { instance = it }
             }
@@ -300,7 +353,11 @@ object DefaultData {
 
     suspend fun seedIfNeeded(db: AccBookDatabase) {
         if (db.accountDao().countAll() == 0) {
-            db.accountDao().insertAll(defaultAccounts.map { AccountEntity(name = it) })
+            db.accountDao().insertAll(
+                defaultAccounts.mapIndexed { i, name ->
+                    AccountEntity(name = name, isDefault = i == 0)
+                },
+            )
         }
         if (db.categoryDao().countAll() == 0) {
             val expense = defaultExpenseCategories.mapIndexed { i, name ->

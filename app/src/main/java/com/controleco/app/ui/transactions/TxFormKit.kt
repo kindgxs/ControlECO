@@ -287,6 +287,7 @@ fun TxCategoryChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     height: Dp = 33.dp,
+    onLongClick: (() -> Unit)? = null,
 ) {
     EcoChip(
         text = name,
@@ -294,6 +295,7 @@ fun TxCategoryChip(
         onClick = onClick,
         modifier = modifier,
         height = height,
+        onLongClick = onLongClick,
     )
 }
 

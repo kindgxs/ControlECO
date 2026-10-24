@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -48,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.CategoryIcon
+import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.budget.CategoryBudgetMath
 import com.controleco.app.data.budget.CategoryBudgetMode
@@ -73,17 +73,18 @@ import com.controleco.app.ui.eco.EcoIconButton
 import com.controleco.app.ui.eco.EcoMoneyField
 import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPrimaryButton
+import com.controleco.app.ui.eco.EcoRow
 import com.controleco.app.ui.eco.EcoRowDivider
 import com.controleco.app.ui.eco.EcoSectionHead
 import com.controleco.app.ui.eco.EcoSegmented
 import com.controleco.app.ui.eco.EcoSheet
-import com.controleco.app.ui.eco.EcoSquareFab
 import com.controleco.app.ui.eco.EcoTextAction
 import com.controleco.app.ui.eco.EcoTopBar
 import com.controleco.app.ui.eco.ecoPressable
 import com.controleco.app.ui.theme.EcoType
 import com.controleco.app.ui.theme.accBook
 import com.controleco.app.ui.theme.eco
+import com.controleco.app.ui.transactions.TxSelectField
 import com.controleco.app.util.Money
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -112,6 +113,8 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
 
     var showEditor by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<CategoryEntity?>(null) }
+    var editingParent by remember { mutableStateOf<CategoryEntity?>(null) }
+    var actionTarget by remember { mutableStateOf<CategoryEntity?>(null) }
     var draftIcon by remember { mutableStateOf("") }
     var sheetError by remember { mutableStateOf<String?>(null) }
     // 本次编辑里刚导入、还没保存的图片：取消时删掉，避免留孤儿文件
@@ -132,8 +135,9 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         }
     }
 
-    fun openEditor(category: CategoryEntity?) {
+    fun openEditor(category: CategoryEntity?, parent: CategoryEntity? = null) {
         editing = category
+        editingParent = parent ?: category?.parentId?.let { pid -> categories.firstOrNull { it.id == pid } }
         draftIcon = category?.icon ?: ""
         freshImport = null
         sheetError = null
@@ -145,9 +149,11 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         freshImport = null
     }
 
-    val expenseList = categories.filter { it.type == TxType.EXPENSE }
-    val incomeList = categories.filter { it.type == TxType.INCOME }
-    val allocatedCents = expenseList.sumOf { budgets[it.id] ?: 0L }
+    // 「支出」按一级分类排序后紧跟其二级分类；预算只挂在一级分类上
+    val expenseRows = CategoryTree.flatten(categories, TxType.EXPENSE)
+    val incomeRows = CategoryTree.flatten(categories, TxType.INCOME)
+    val expenseTop = CategoryTree.topLevel(categories, TxType.EXPENSE)
+    val allocatedCents = expenseTop.sumOf { budgets[it.id] ?: 0L }
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
@@ -167,7 +173,7 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
 
             LazyColumn(
                 Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 112.dp),
+                contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 32.dp),
             ) {
                 item(key = "head") {
                     Row(
@@ -211,23 +217,25 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
 
                 item(key = "expense") {
                     EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
-                        if (expenseList.isEmpty()) {
+                        if (expenseRows.isEmpty()) {
                             EcoEmpty(
                                 title = "暂无支出分类",
-                                body = "点右下角 + 新建一个分类，预算与图标都能在编辑卡里改",
+                                body = "点右上角 + 新建一个分类；长按已有分类可新增二级分类或调整顺序",
                                 icon = EcoIcons.Bowl,
                             )
                         } else {
                             Column {
-                                expenseList.forEachIndexed { index, category ->
+                                expenseRows.forEachIndexed { index, category ->
                                     CategoryRowItem(
                                         category = category,
                                         budgetCents = budgets[category.id] ?: 0L,
                                         percentBp = budgetPercents[category.id] ?: 0,
                                         budgetMode = budgetMode,
+                                        depth = if (category.parentId == null) 0 else 1,
                                         onClick = { openEditor(category) },
+                                        onLongClick = { actionTarget = category },
                                     )
-                                    if (index != expenseList.lastIndex) EcoRowDivider(inset = 15.dp)
+                                    if (index != expenseRows.lastIndex) EcoRowDivider(inset = 15.dp)
                                 }
                             }
                         }
@@ -235,12 +243,12 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 }
 
                 item(key = "incomeHead") {
-                    EcoSectionHead(title = "收入分类", aside = "${incomeList.size} ITEMS")
+                    EcoSectionHead(title = "收入分类", aside = "${CategoryTree.topLevel(categories, TxType.INCOME).size} ITEMS")
                 }
 
                 item(key = "income") {
                     EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
-                        if (incomeList.isEmpty()) {
+                        if (incomeRows.isEmpty()) {
                             EcoEmpty(
                                 title = "暂无收入分类",
                                 body = "新增分类时把类型切到「收入」即可",
@@ -248,15 +256,17 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                             )
                         } else {
                             Column {
-                                incomeList.forEachIndexed { index, category ->
+                                incomeRows.forEachIndexed { index, category ->
                                     CategoryRowItem(
                                         category = category,
                                         budgetCents = budgets[category.id] ?: 0L,
                                         percentBp = budgetPercents[category.id] ?: 0,
                                         budgetMode = budgetMode,
+                                        depth = if (category.parentId == null) 0 else 1,
                                         onClick = { openEditor(category) },
+                                        onLongClick = { actionTarget = category },
                                     )
-                                    if (index != incomeList.lastIndex) EcoRowDivider(inset = 15.dp)
+                                    if (index != incomeRows.lastIndex) EcoRowDivider(inset = 15.dp)
                                 }
                             }
                         }
@@ -264,14 +274,68 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 }
             }
         }
+    }
 
-        EcoSquareFab(
-            onClick = { openEditor(null) },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(end = 22.dp, bottom = 18.dp),
-        )
+    // 长按分类：新增二级分类 / 编辑 / 调整同级顺序
+    val target = actionTarget
+    if (target != null) {
+        val siblings = if (target.parentId == null) {
+            CategoryTree.topLevel(categories, target.type)
+        } else {
+            CategoryTree.childrenOf(categories, target.parentId)
+        }
+        val pos = siblings.indexOfFirst { it.id == target.id }
+        val parentName = target.parentId?.let { CategoryTree.nameOf(categories, it) }
+        EcoSheet(
+            onDismiss = { actionTarget = null },
+            title = target.name,
+            subtitle = if (parentName == null) "一级分类" else "二级分类 · 上级 $parentName",
+        ) {
+            Column {
+                if (target.parentId == null) {
+                    EcoRow(
+                        title = "新增二级分类",
+                        subtitle = "挂在「${target.name}」下，只占该一级分类预算",
+                        icon = EcoIcons.Plus,
+                        onClick = {
+                            actionTarget = null
+                            openEditor(null, target)
+                        },
+                    )
+                    EcoRowDivider()
+                }
+                EcoRow(
+                    title = "编辑分类",
+                    icon = EcoIcons.Edit,
+                    onClick = {
+                        actionTarget = null
+                        openEditor(target)
+                    },
+                )
+                if (pos > 0) {
+                    EcoRowDivider()
+                    EcoRow(
+                        title = "上移",
+                        subtitle = "与同级分类交换顺序",
+                        onClick = {
+                            vm.moveCategory(target.id, up = true)
+                            actionTarget = null
+                        },
+                    )
+                }
+                if (pos in 0 until siblings.lastIndex) {
+                    EcoRowDivider()
+                    EcoRow(
+                        title = "下移",
+                        subtitle = "与同级分类交换顺序",
+                        onClick = {
+                            vm.moveCategory(target.id, up = false)
+                            actionTarget = null
+                        },
+                    )
+                }
+            }
+        }
     }
 
     if (showEditor) {
@@ -292,6 +356,10 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         }
         CategoryEditorSheet(
             initial = editingNow,
+            parent = editingParent,
+            parentOptions = CategoryTree
+                .topLevel(categories, editingParent?.type ?: (editingNow?.type ?: TxType.EXPENSE))
+                .filter { it.id != editingNow?.id },
             error = sheetError,
             budgetMode = budgetMode,
             initialBudgetCents = editingNow?.let { budgets[it.id] } ?: 0L,
@@ -312,11 +380,11 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             },
             onClearFreshImport = { discardFreshImport() },
             onBudgetModeChange = { vm.setCategoryBudgetMode(it) },
-            onSave = { id, name, type, budgetCents, budgetBp, icon ->
-                vm.saveCategory(id, name, type, icon) { savedId, err ->
+            onSave = { id, name, type, budgetCents, budgetBp, icon, parentId ->
+                vm.saveCategory(id, name, type, icon, parentId) { savedId, err ->
                     if (err == null) {
                         when {
-                            type != TxType.EXPENSE -> {
+                            type != TxType.EXPENSE || parentId != null -> {
                                 vm.setCategoryBudget(savedId, 0L)
                                 vm.setCategoryBudgetPercent(savedId, 0)
                             }
@@ -341,19 +409,22 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     }
 }
 
-/** 分类行：分类标记 + 名称 + 预算读数（金额 / 比例）或「收入」 */
+/** 分类行：分类标记 + 名称 + 预算读数（金额 / 比例）或「收入」；长按打开二级/排序菜单 */
 @Composable
 private fun CategoryRowItem(
     category: CategoryEntity,
     budgetCents: Long,
     percentBp: Int,
     budgetMode: CategoryBudgetMode,
+    depth: Int,
     onClick: () -> Unit,
+    onLongClick: () -> Unit,
 ) {
     val c = MaterialTheme.eco
     val isExpense = category.type == TxType.EXPENSE
     val value = when {
         !isExpense -> "收入"
+        depth > 0 -> "占上级预算"
         budgetMode == CategoryBudgetMode.PERCENT ->
             percentBp.takeIf { it > 0 }?.let { CategoryBudgetMath.formatPercent(it) }
         else -> budgetCents.takeIf { it > 0L }?.let { Money.formatYuanGroupedFixed(it) }
@@ -362,22 +433,22 @@ private fun CategoryRowItem(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 56.dp)
-            .ecoPressable(scaleTo = 0.99f, onClick = onClick)
-            .padding(horizontal = 15.dp, vertical = 11.dp),
+            .ecoPressable(scaleTo = 0.99f, onClick = onClick, onLongClick = onLongClick)
+            .padding(start = 15.dp + (depth * 18).dp, end = 15.dp, top = 11.dp, bottom = 11.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         EcoCategoryTile(
             categoryName = category.name,
             icon = category.icon,
-            size = 31.dp,
-            radius = 10.dp,
+            size = if (depth > 0) 25.dp else 31.dp,
+            radius = if (depth > 0) 8.dp else 10.dp,
             bare = true,
         )
         Spacer(Modifier.width(11.dp))
         Text(
             category.name,
-            style = EcoType.RowTitle,
-            color = c.ink,
+            style = if (depth > 0) EcoType.RowSub.copy(fontSize = 13.sp) else EcoType.RowTitle,
+            color = if (depth > 0) c.muted else c.ink,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
@@ -404,6 +475,8 @@ private fun CategoryRowItem(
 @Composable
 private fun CategoryEditorSheet(
     initial: CategoryEntity?,
+    parent: CategoryEntity?,
+    parentOptions: List<CategoryEntity>,
     error: String?,
     budgetMode: CategoryBudgetMode,
     initialBudgetCents: Long,
@@ -416,13 +489,16 @@ private fun CategoryEditorSheet(
     onPickImage: () -> Unit,
     onClearFreshImport: () -> Unit,
     onBudgetModeChange: (CategoryBudgetMode) -> Unit,
-    onSave: (Long, String, TxType, Long, Int, String) -> Unit,
+    onSave: (Long, String, TxType, Long, Int, String, Long?) -> Unit,
     onDelete: (() -> Unit)?,
     onClose: () -> Unit,
 ) {
     val c = MaterialTheme.eco
     var name by remember(initial?.id) { mutableStateOf(initial?.name ?: "") }
-    var type by remember(initial?.id) { mutableStateOf(initial?.type ?: TxType.EXPENSE) }
+    var type by remember(initial?.id) { mutableStateOf(initial?.type ?: parent?.type ?: TxType.EXPENSE) }
+    var parentId by remember(initial?.id) {
+        mutableStateOf(initial?.parentId ?: parent?.id ?: 0L)
+    }
     var budgetText by remember(initial?.id) {
         mutableStateOf(if (initialBudgetCents > 0L) Money.formatCents(initialBudgetCents) else "")
     }
@@ -486,7 +562,8 @@ private fun CategoryEditorSheet(
     val visibleGlyphs = if (showAllGlyphs) allGlyphs else allGlyphs.take(QUICK_GLYPH_COUNT)
     val glyphTintColor = currentColor?.let { Color(it or 0xFF000000.toInt()) }
     // 「其他」是删除分类的兜底：不提供改名入口、类型锁死、删除置灰，靠界面本身表达约束
-    val isFallback = initial?.name == "其他"
+    val isFallback = initial?.name == "其他" && initial?.parentId == null
+    val selectedParent = parentOptions.firstOrNull { it.id == parentId }
 
     EcoSheet(
         onDismiss = onClose,
@@ -534,6 +611,33 @@ private fun CategoryEditorSheet(
                 )
             }
 
+            // ---------- 上级分类（二级分类） ----------
+            Column {
+                Text("上级分类", style = EcoType.FieldLabel, color = c.muted)
+                Spacer(Modifier.height(6.dp))
+                TxSelectField(
+                    value = selectedParent?.name ?: "",
+                    options = listOf(0L to "无（一级分类）") + parentOptions.map { it.id to it.name },
+                    onSelect = { picked ->
+                        parentId = picked
+                        parentOptions.firstOrNull { it.id == picked }?.let { p -> type = p.type }
+                        localError = null
+                    },
+                    placeholder = "无（一级分类）",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    if (parentId == 0L) {
+                        "作为一级分类，可单独设置分类预算"
+                    } else {
+                        "二级分类不单独占预算，只计入所属一级分类的预算与统计"
+                    },
+                    style = EcoType.PageNote,
+                    color = c.quiet,
+                )
+            }
+
             // ---------- 类型 ----------
             Column {
                 Text("类型", style = EcoType.FieldLabel, color = c.muted)
@@ -546,7 +650,7 @@ private fun CategoryEditorSheet(
                         localError = null
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = !isFallback,
+                    enabled = !isFallback && parentId == 0L,
                 )
             }
 
@@ -704,8 +808,8 @@ private fun CategoryEditorSheet(
                 },
             )
 
-            // ---------- 分类预算（仅支出） ----------
-            if (type == TxType.EXPENSE) {
+            // ---------- 分类预算（仅一级支出分类） ----------
+            if (type == TxType.EXPENSE && parentId == 0L) {
                 Column {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
@@ -796,16 +900,18 @@ private fun CategoryEditorSheet(
                 text = "保存",
                 onClick = {
                     val trimmed = name.trim()
+                    val parentValue = if (parentId != 0L) parentId else null
                     when {
                         trimmed.isEmpty() -> localError = "请输入名称"
-                        // 收入分类没有预算：不解析（也不阻塞）预算输入
-                        type != TxType.EXPENSE -> onSave(initial?.id ?: 0L, trimmed, type, 0L, 0, icon)
+                        // 收入 / 二级分类没有独立预算：不解析（也不阻塞）预算输入
+                        type != TxType.EXPENSE || parentId != 0L ->
+                            onSave(initial?.id ?: 0L, trimmed, type, 0L, 0, icon, parentValue)
                         budgetMode == CategoryBudgetMode.PERCENT -> {
                             val bp = CategoryBudgetMath.cellsToBp(percentCells)
                             if (bp > maxAllowedBp) {
                                 localError = "最多可设 ${CategoryBudgetMath.formatPercent(maxAllowedBp)}"
                             } else {
-                                onSave(initial?.id ?: 0L, trimmed, type, 0L, bp, icon)
+                                onSave(initial?.id ?: 0L, trimmed, type, 0L, bp, icon, parentValue)
                             }
                         }
                         else -> {
@@ -816,7 +922,7 @@ private fun CategoryEditorSheet(
                             } else if (type == TxType.EXPENSE && cents > maxAllowedCents) {
                                 localError = "最多可设 ${Money.formatYuanGrouped(maxAllowedCents)}"
                             } else {
-                                onSave(initial?.id ?: 0L, trimmed, type, cents, 0, icon)
+                                onSave(initial?.id ?: 0L, trimmed, type, cents, 0, icon, parentValue)
                             }
                         }
                     }

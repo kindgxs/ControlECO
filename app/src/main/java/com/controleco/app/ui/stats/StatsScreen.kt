@@ -41,7 +41,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
@@ -59,11 +61,15 @@ import com.controleco.app.data.budget.MonthPeriod
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.CategorySumRow
 import com.controleco.app.data.db.TxType
+import com.controleco.app.data.deposit.DepositMath
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.common.PeriodPickerSheet
 import com.controleco.app.ui.common.periodLabel
 import com.controleco.app.ui.eco.EcoAutoMoney
 import com.controleco.app.ui.eco.EcoPane
+import com.controleco.app.ui.eco.EcoPill
+import com.controleco.app.ui.eco.EcoPillTone
+import com.controleco.app.ui.eco.EcoProgressBar
 import com.controleco.app.ui.eco.EcoSectionHead
 import com.controleco.app.ui.eco.EcoSegmented
 import com.controleco.app.ui.eco.EcoTopBar
@@ -108,6 +114,10 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
     val spendingTotal by vm.periodSpendingTotal.collectAsStateWithLifecycle()
     val categoryBudgets by vm.categoryBudgets.collectAsStateWithLifecycle()
     val categories by vm.categories.collectAsStateWithLifecycle()
+    val rollupMode by vm.subcategoryRollupMode.collectAsStateWithLifecycle()
+    val depositTrend by vm.depositTrend.collectAsStateWithLifecycle()
+    val depositGoal by vm.depositGoalCents.collectAsStateWithLifecycle()
+    val currentSaving by vm.currentMonthSaving.collectAsStateWithLifecycle()
     val cardImageUri by vm.cardImageUri.collectAsStateWithLifecycle()
     val cardTransform by vm.cardTransform.collectAsStateWithLifecycle()
     val cardImage by vm.cardImage.collectAsStateWithLifecycle()
@@ -119,6 +129,10 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
     val totalsReady = totals ?: return
     val byCategoryReady = byCategory ?: return
     val spendingReady = spendingTotal ?: return
+    // 二级分类按当前口径折算到一级分类（预算只挂在一级分类上）
+    val rolledCategory = remember(byCategoryReady, categories, rollupMode) {
+        vm.rollupCategorySums(byCategoryReady, categories)
+    }
 
     val expense = totalsReady.firstOrNull { it.type == TxType.EXPENSE }?.totalCents ?: 0L
     val income = totalsReady.firstOrNull { it.type == TxType.INCOME }?.totalCents ?: 0L
@@ -174,8 +188,8 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
     var selectedBar by remember(bars) { mutableIntStateOf(defaultBarIndex) }
 
     // 分类切片：实际支出（本期，已排除被标「已退款」的支出）+ 分类预算（年视角按 12 个月合计）
-    val slices = remember(byCategoryReady, categoryBudgets, categories, mode) {
-        val actual = byCategoryReady.map { it.categoryName to it.totalCents }
+    val slices = remember(rolledCategory, categoryBudgets, categories, mode) {
+        val actual = rolledCategory.map { it.categoryName to it.totalCents }
         val budget = categoryBudgets.entries.mapNotNull { (id, cents) ->
             val category = categories.firstOrNull { it.id == id }
             if (category == null || category.type != TxType.EXPENSE || cents <= 0L) {
@@ -199,8 +213,8 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
     }
 
     // 预算对比：分类预算（年视角 ×12）与实际支出对齐，按实际降序
-    val ratioRows = remember(categoryBudgets, categories, byCategoryReady, mode) {
-        buildRatioRows(categoryBudgets, categories, byCategoryReady, mode)
+    val ratioRows = remember(categoryBudgets, categories, rolledCategory, mode) {
+        buildRatioRows(categoryBudgets, categories, rolledCategory, mode)
     }
     val ratioBudget = ratioRows.sumOf { it.budgetCents }
 
@@ -318,6 +332,26 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
                     selected = selectedSlice,
                     onSelect = { selectedSlice = it },
                 )
+            }
+
+            // ---- 存款分析（功能7）：当月实际新增 = 当月收入 − 当月支出 ----
+            val savingNow = currentSaving
+            val trendNow = depositTrend
+            if (savingNow != null && trendNow != null) {
+                item(key = "savingsHead") {
+                    EcoSectionHead(
+                        title = "存款分析",
+                        aside = "SAVINGS",
+                        modifier = Modifier.padding(horizontal = 22.dp),
+                    )
+                }
+                item(key = "savings") {
+                    SavingsCard(
+                        current = savingNow,
+                        trend = trendNow,
+                        goalCents = depositGoal,
+                    )
+                }
             }
         }
     }
@@ -978,6 +1012,204 @@ private fun RatioListRow(
                     textAlign = TextAlign.End,
                 )
             }
+        }
+    }
+}
+
+// ---------- 存款分析 ----------
+
+/**
+ * 存款分析卡：当月实际新增存款（收入 − 支出）+ 目标达成比例 + 近 12 个月趋势与逐月明细。
+ *
+ * 数据来自 [LedgerViewModel.currentMonthSaving] / [LedgerViewModel.depositTrend]，
+ * 口径与首页、统计页一致：支出排除「已退款」，收入含退款到账。
+ */
+@Composable
+private fun SavingsCard(
+    current: DepositMath.MonthSaving,
+    trend: List<DepositMath.MonthSaving>,
+    goalCents: Long,
+) {
+    val c = MaterialTheme.eco
+    val savingCents = current.savingCents
+    val ratio = current.ratio(goalCents)
+    val savingsColor = if (savingCents < 0L) c.clay else c.jade
+    EcoPane(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 22.dp),
+        shape = RoundedCornerShape(20.dp),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 14.dp, end = 14.dp, top = 15.dp, bottom = 13.dp),
+        ) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "本月实际新增存款",
+                        style = EcoType.Micro.copy(fontSize = 8.5.sp),
+                        color = c.quiet,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    EcoAutoMoney(
+                        text = Money.formatYuanGroupedFixed(savingCents),
+                        style = EcoType.ConclusionAmount.copy(fontSize = 21.sp),
+                        color = savingsColor,
+                        minSize = 13.sp,
+                        textAlign = TextAlign.Start,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                if (ratio == null) {
+                    EcoPill(text = "未设目标", tone = EcoPillTone.Neutral)
+                } else {
+                    EcoPill(
+                        text = "达成 ${(ratio * 100f).roundToInt()}%",
+                        tone = when {
+                            ratio >= 1f -> EcoPillTone.Good
+                            ratio >= 0f -> EcoPillTone.Blue
+                            else -> EcoPillTone.Bad
+                        },
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            if (goalCents > 0L) {
+                EcoProgressBar(
+                    progress = savingCents.toFloat() / goalCents.toFloat(),
+                    height = 7.dp,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "目标 ${Money.formatYuanGrouped(goalCents)} / 月 · " +
+                        "收入 ${Money.formatYuanGrouped(current.incomeCents)} · " +
+                        "支出 ${Money.formatYuanGrouped(current.expenseCents)}",
+                    style = EcoType.PageNote.copy(fontSize = 8.5.sp),
+                    color = c.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            } else {
+                Text(
+                    "在「存款」页设置每月目标后，这里会显示达成比例",
+                    style = EcoType.PageNote.copy(fontSize = 8.5.sp),
+                    color = c.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Box(Modifier.fillMaxWidth().height(1.dp).background(c.rule))
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "存款趋势 · 近 12 个月",
+                style = EcoType.RowTitle.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Bold),
+                color = c.ink,
+            )
+            Spacer(Modifier.height(8.dp))
+            SavingsBars(trend)
+            Spacer(Modifier.height(6.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                Text(
+                    trend.firstOrNull()?.let { "${it.month.year}.${it.month.monthValue}" } ?: "",
+                    style = EcoType.PageNote.copy(fontSize = 8.sp),
+                    color = c.quiet,
+                )
+                Text(
+                    "正数 = 当月新增 · 负数 = 当月净流出",
+                    style = EcoType.PageNote.copy(fontSize = 8.sp),
+                    color = c.quiet,
+                )
+                Text(
+                    trend.lastOrNull()?.let { "${it.month.year}.${it.month.monthValue}" } ?: "",
+                    style = EcoType.PageNote.copy(fontSize = 8.sp),
+                    color = c.quiet,
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            trend.takeLast(6).reversed().forEachIndexed { index, month ->
+                if (index > 0) {
+                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.rule))
+                }
+                SavingsMonthRow(month = month, goalCents = goalCents)
+            }
+        }
+    }
+}
+
+/** 单月存款行：月份 / 新增金额 / 达成比例 */
+@Composable
+private fun SavingsMonthRow(month: DepositMath.MonthSaving, goalCents: Long) {
+    val c = MaterialTheme.eco
+    val saving = month.savingCents
+    val ratio = month.ratio(goalCents)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "${month.month.year}年${month.month.monthValue}月",
+            style = EcoType.PageNote.copy(fontSize = 9.sp),
+            color = c.muted,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+        )
+        Text(
+            Money.formatYuanGrouped(saving),
+            style = EcoType.RowTrail.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
+            color = if (saving < 0L) c.clay else c.jade,
+            maxLines = 1,
+        )
+        Spacer(Modifier.width(10.dp))
+        Text(
+            ratio?.let { "${(it * 100f).roundToInt()}%" } ?: "—",
+            style = EcoType.PageNote.copy(fontSize = 9.sp),
+            color = if (ratio == null) c.quiet else if (ratio >= 1f) c.jade else c.muted,
+            modifier = Modifier.width(40.dp),
+            textAlign = TextAlign.End,
+            maxLines = 1,
+        )
+    }
+}
+
+/** 12 个月存款柱：以零线为基准，正数向上（jade）、负数向下（clay） */
+@Composable
+private fun SavingsBars(trend: List<DepositMath.MonthSaving>) {
+    val c = MaterialTheme.eco
+    val values = trend.map { it.savingCents }
+    if (values.isEmpty()) return
+    val maxAbs = maxOf(1L, values.maxOfOrNull { kotlin.math.abs(it) } ?: 1L)
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .height(84.dp),
+    ) {
+        val count = values.size
+        val slot = size.width / count
+        val barWidth = slot * 0.52f
+        val midY = size.height / 2f
+        val half = size.height / 2f - 4.dp.toPx()
+        drawLine(
+            color = c.ruleStrong,
+            start = Offset(0f, midY),
+            end = Offset(size.width, midY),
+            strokeWidth = 1.dp.toPx(),
+        )
+        values.forEachIndexed { index, value ->
+            val height = (kotlin.math.abs(value).toFloat() / maxAbs) * half
+            val x = index * slot + (slot - barWidth) / 2f
+            val color = if (value >= 0L) c.jade else c.clay
+            val h = if (value == 0L) 1.dp.toPx() else height.coerceAtLeast(1.5.dp.toPx())
+            drawRoundRect(
+                color = color.copy(alpha = 0.82f),
+                topLeft = Offset(x, if (value >= 0L) midY - h else midY),
+                size = Size(barWidth, h),
+                cornerRadius = CornerRadius(barWidth / 2f),
+            )
         }
     }
 }

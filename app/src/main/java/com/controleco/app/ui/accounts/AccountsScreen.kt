@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -28,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.db.AccountEntity
+import com.controleco.app.data.model.AssetSummary
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.eco.EcoAutoMoney
 import com.controleco.app.ui.eco.EcoConfirm
@@ -51,10 +52,11 @@ import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPill
 import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
+import com.controleco.app.ui.eco.EcoRow
 import com.controleco.app.ui.eco.EcoRowDivider
 import com.controleco.app.ui.eco.EcoSectionHead
 import com.controleco.app.ui.eco.EcoSheet
-import com.controleco.app.ui.eco.EcoSquareFab
+import com.controleco.app.ui.eco.EcoSwitchRow
 import com.controleco.app.ui.eco.EcoTopBar
 import com.controleco.app.ui.eco.ecoPressable
 import com.controleco.app.ui.theme.EcoType
@@ -73,15 +75,11 @@ import com.controleco.app.util.Money
 fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val balances by vm.accountBalances.collectAsStateWithLifecycle(initialValue = emptyList())
+    val asset by vm.assetSummary.collectAsStateWithLifecycle(initialValue = null)
 
     var showEditor by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<AccountEntity?>(null) }
     var sheetError by remember { mutableStateOf<String?>(null) }
-
-    val totalCents = accounts.sumOf { account ->
-        val bal = balances.firstOrNull { it.accountId == account.id }
-        (bal?.initialBalanceCents ?: account.initialBalanceCents) + (bal?.signedSumCents ?: 0L)
-    }
 
     fun openEditor(account: AccountEntity?) {
         editing = account
@@ -89,76 +87,69 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         showEditor = true
     }
 
-    Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
-            EcoTopBar(
-                micro = "ACCOUNTS",
-                title = "账户管理",
-                onBack = onBack,
-                action = {
-                    EcoIconButton(
-                        icon = EcoIcons.Plus,
-                        contentDescription = "新增账户",
-                        onClick = { openEditor(null) },
-                        size = 38.dp,
-                    )
-                },
-            )
+    Column(Modifier.fillMaxSize()) {
+        EcoTopBar(
+            micro = "ACCOUNTS",
+            title = "账户管理",
+            onBack = onBack,
+            action = {
+                EcoIconButton(
+                    icon = EcoIcons.Plus,
+                    contentDescription = "新增账户",
+                    onClick = { openEditor(null) },
+                    size = 38.dp,
+                )
+            },
+        )
 
-            LazyColumn(
-                Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 112.dp),
-            ) {
-                item(key = "total") {
-                    Spacer(Modifier.height(8.dp))
-                    AssetsTotalCard(totalCents = totalCents, accountCount = accounts.size)
-                }
-                item(key = "head") {
-                    EcoSectionHead(title = "账户", aside = "ACCOUNTS")
-                }
-                item(key = "list") {
-                    EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
-                        if (accounts.isEmpty()) {
-                            EcoEmpty(
-                                title = "暂无账户",
-                                body = "点右下角 + 新增一个账户，余额与流水都记在账户下",
-                                icon = EcoIcons.Wallet,
-                            )
-                        } else {
-                            Column {
-                                accounts.forEachIndexed { index, account ->
-                                    val bal = balances.firstOrNull { it.accountId == account.id }
-                                    val initial = bal?.initialBalanceCents ?: account.initialBalanceCents
-                                    val flow = bal?.signedSumCents ?: 0L
-                                    AccountRowItem(
-                                        account = account,
-                                        initialCents = initial,
-                                        flowCents = flow,
-                                        isDefault = index == 0 && accounts.size > 1,
-                                        onClick = { openEditor(account) },
-                                    )
-                                    if (index != accounts.lastIndex) EcoRowDivider(inset = 15.dp)
-                                }
+        LazyColumn(
+            Modifier.weight(1f).fillMaxWidth(),
+            contentPadding = PaddingValues(start = 22.dp, end = 22.dp, bottom = 32.dp),
+        ) {
+            item(key = "total") {
+                Spacer(Modifier.height(8.dp))
+                AssetsTotalCard(asset = asset, accountCount = accounts.size)
+            }
+            item(key = "head") {
+                EcoSectionHead(title = "账户", aside = "ACCOUNTS")
+            }
+            item(key = "list") {
+                EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
+                    if (accounts.isEmpty()) {
+                        EcoEmpty(
+                            title = "暂无账户",
+                            body = "点右上角 + 新增一个账户，余额与流水都记在账户下",
+                            icon = EcoIcons.Wallet,
+                        )
+                    } else {
+                        Column {
+                            accounts.forEachIndexed { index, account ->
+                                val bal = balances.firstOrNull { it.accountId == account.id }
+                                val initial = bal?.initialBalanceCents ?: account.initialBalanceCents
+                                val flow = bal?.signedSumCents ?: 0L
+                                AccountRowItem(
+                                    account = account,
+                                    initialCents = initial,
+                                    flowCents = flow,
+                                    isDefault = account.isDefault,
+                                    sharedCount = accounts.count {
+                                        account.sharedGroupId != 0L && it.sharedGroupId == account.sharedGroupId
+                                    },
+                                    onClick = { openEditor(account) },
+                                )
+                                if (index != accounts.lastIndex) EcoRowDivider(inset = 15.dp)
                             }
                         }
                     }
                 }
-                item(key = "note") {
-                    EcoPageNote(
-                        "账户余额 = 期初余额 + 全部收入 − 全部支出。修改期初余额会改变当前余额，不会改动流水；" +
-                            "账户下已有流水时无法删除。",
-                    )
-                }
+            }
+            item(key = "note") {
+                EcoPageNote(
+                    "账户余额 = 期初余额 + 全部收入 − 全部支出。修改期初余额会改变当前余额，不会改动流水；" +
+                        "账户下已有流水时无法删除。",
+                )
             }
         }
-
-        EcoSquareFab(
-            onClick = { openEditor(null) },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .navigationBarsPadding()
-                .padding(end = 22.dp, bottom = 18.dp),
-        )
     }
 
     if (showEditor) {
@@ -178,14 +169,19 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         }
         AccountEditorSheet(
             initial = editingNow,
+            accounts = accounts,
             currentBalanceCents = editingNow?.let { entity ->
                 val bal = balances.firstOrNull { it.accountId == entity.id }
                 if (bal == null) null else bal.initialBalanceCents + bal.signedSumCents
             },
             error = sheetError,
-            onSave = { id, name, cents, note ->
-                vm.saveAccount(id, name, cents, note) { err ->
+            onMakeDefault = {
+                editingNow?.let { vm.setDefaultAccount(it.id) }
+            },
+            onSave = { id, name, cents, note, creditLimitCents, isDefault, shareWith ->
+                vm.saveAccount(id, name, cents, note, creditLimitCents, 0L, isDefault) { err ->
                     if (err == null) {
+                        if (shareWith != null && id > 0L) vm.setSharedCreditGroup(id, shareWith)
                         sheetError = null
                         showEditor = false
                     } else {
@@ -199,33 +195,78 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     }
 }
 
-/** 总资产卡：TOTAL ASSETS / 本机余额 + 大字金额 + 账户数 */
+/** 净资产卡：净资产 + 存款 / 负债两列 + 账户数 */
 @Composable
-private fun AssetsTotalCard(totalCents: Long, accountCount: Int) {
+private fun AssetsTotalCard(asset: AssetSummary?, accountCount: Int) {
     val c = MaterialTheme.eco
+    val net = asset?.netCents ?: 0L
+    val deposit = asset?.depositCents ?: 0L
+    val liability = asset?.liabilityCents ?: 0L
     EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
         Column(
             Modifier
                 .fillMaxWidth()
                 .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 13.dp),
         ) {
-            Text("TOTAL ASSETS / 本机余额", style = EcoType.AssetLabel, color = c.quiet)
+            Text("NET ASSETS / 净资产", style = EcoType.AssetLabel, color = c.quiet)
             Spacer(Modifier.height(5.dp))
             EcoAutoMoney(
-                text = Money.formatYuanGroupedFixed(totalCents),
+                text = Money.formatYuanGroupedFixed(net),
                 style = EcoType.AssetAmount.copy(fontSize = 27.sp, lineHeight = 32.sp),
-                color = if (totalCents < 0) c.clay else c.ink,
+                color = if (net < 0) c.clay else c.ink,
                 modifier = Modifier.fillMaxWidth(),
                 minSize = 19.sp,
                 textAlign = TextAlign.Start,
             )
-            Spacer(Modifier.height(5.dp))
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                AssetMiniColumn(
+                    label = "存款",
+                    cents = deposit,
+                    color = c.jade,
+                    modifier = Modifier.weight(1f),
+                )
+                AssetMiniColumn(
+                    label = "负债",
+                    cents = liability,
+                    color = c.clay,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
             Text(
                 "$accountCount 个账户，点账户编辑",
                 style = EcoType.PageNote,
                 color = c.quiet,
             )
         }
+    }
+}
+
+@Composable
+private fun AssetMiniColumn(
+    label: String,
+    cents: Long,
+    color: Color,
+    modifier: Modifier = Modifier,
+) {
+    val c = MaterialTheme.eco
+    Column(
+        modifier
+            .clip(RoundedCornerShape(11.dp))
+            .background(c.surface2)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Text(label, style = EcoType.PageNote, color = c.muted)
+        Spacer(Modifier.height(3.dp))
+        EcoAutoMoney(
+            text = Money.formatYuanGroupedFixed(cents),
+            style = EcoType.RowTrail.copy(fontSize = 14.sp),
+            color = color,
+            modifier = Modifier.fillMaxWidth(),
+            minSize = 11.sp,
+            textAlign = TextAlign.Start,
+        )
     }
 }
 
@@ -236,6 +277,7 @@ private fun AccountRowItem(
     initialCents: Long,
     flowCents: Long,
     isDefault: Boolean,
+    sharedCount: Int,
     onClick: () -> Unit,
 ) {
     val c = MaterialTheme.eco
@@ -264,10 +306,20 @@ private fun AccountRowItem(
                     Spacer(Modifier.width(6.dp))
                     EcoPill("默认", EcoPillTone.Neutral)
                 }
+                if (sharedCount > 1) {
+                    Spacer(Modifier.width(6.dp))
+                    EcoPill("共用额度", EcoPillTone.Blue)
+                }
             }
             Spacer(Modifier.height(3.dp))
             Text(
-                account.note.ifBlank { if (isDefault) "新交易默认使用此账户" else "无备注" },
+                account.note.ifBlank {
+                    when {
+                        isDefault -> "新交易默认使用此账户"
+                        sharedCount > 1 -> "$sharedCount 张卡共用欠款额度"
+                        else -> "无备注"
+                    }
+                },
                 style = EcoType.RowSub,
                 color = c.muted,
                 maxLines = 1,
@@ -316,13 +368,15 @@ private fun AccountMark(name: String, size: Dp) {
     }
 }
 
-/** 账户新增/编辑底部卡：名称 / 期初余额 / 备注 / 删除（带二次确认） */
+/** 账户新增/编辑底部卡：名称 / 期初余额 / 信用额度 / 默认账户 / 共用额度 / 删除（带二次确认） */
 @Composable
 private fun AccountEditorSheet(
     initial: AccountEntity?,
+    accounts: List<AccountEntity>,
     currentBalanceCents: Long?,
     error: String?,
-    onSave: (Long, String, Long, String) -> Unit,
+    onMakeDefault: () -> Unit,
+    onSave: (Long, String, Long, String, Long, Boolean, Long?) -> Unit,
     onDelete: (() -> Unit)?,
     onClose: () -> Unit,
 ) {
@@ -332,6 +386,23 @@ private fun AccountEditorSheet(
         mutableStateOf(initial?.let { Money.formatCents(it.initialBalanceCents) } ?: "")
     }
     var note by remember(initial?.id) { mutableStateOf(initial?.note ?: "") }
+    var creditText by remember(initial?.id) {
+        mutableStateOf(
+            initial?.let { if (it.creditLimitCents > 0L) Money.formatCents(it.creditLimitCents) else "" } ?: "",
+        )
+    }
+    var makeDefault by remember(initial?.id) {
+        mutableStateOf(initial?.isDefault == true || accounts.isEmpty())
+    }
+    // 已存在的共用组：找出同组的另一张卡
+    var sharedWith by remember(initial?.id) {
+        mutableStateOf(
+            initial?.let { me ->
+                if (me.sharedGroupId == 0L) 0L
+                else accounts.firstOrNull { it.id != me.id && it.sharedGroupId == me.sharedGroupId }?.id ?: 0L
+            } ?: 0L,
+        )
+    }
     var localError by remember(initial?.id) { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
 
@@ -385,12 +456,56 @@ private fun AccountEditorSheet(
                 supporting = "可留空 = 0；修改期初余额会改变当前余额，不会改动流水。",
             )
 
+            EcoMoneyField(
+                label = "信用额度",
+                value = creditText,
+                onValueChange = { creditText = it },
+                placeholder = "信用卡可填，0 或留空 = 不设额度",
+                supporting = "共用额度的卡会取组内最大值作为统一额度。",
+            )
+
+            EcoSwitchRow(
+                title = "设为默认账户",
+                subtitle = "新增交易时默认选中此账户",
+                checked = makeDefault,
+                enabled = !(initial?.isDefault == true),
+                onCheckedChange = {
+                    makeDefault = it
+                    if (it && initial != null && !initial.isDefault) onMakeDefault()
+                },
+            )
+
             EcoField(
                 label = "备注",
                 value = note,
                 onValueChange = { note = it },
                 placeholder = "可选，例如：储蓄卡 尾号 0921",
             )
+
+            // 同行多卡共用欠款额度：把两张卡绑定到同一组
+            if (initial != null && accounts.any { it.id != initial.id }) {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text("共用欠款额度", style = EcoType.FieldLabel, color = c.muted)
+                    EcoRow(
+                        title = "不共用",
+                        subtitle = "此卡单独计算额度",
+                        trail = if (sharedWith == 0L) "已选" else null,
+                        trailColor = c.blue,
+                        onClick = { sharedWith = 0L },
+                        minHeight = 46.dp,
+                    )
+                    accounts.filter { it.id != initial.id }.forEach { other ->
+                        EcoRow(
+                            title = other.name,
+                            subtitle = "额度 ${Money.formatYuanGrouped(other.creditLimitCents)}",
+                            trail = if (sharedWith == other.id) "已选" else null,
+                            trailColor = c.blue,
+                            onClick = { sharedWith = other.id },
+                            minHeight = 46.dp,
+                        )
+                    }
+                }
+            }
 
             val shownError = localError ?: error
             if (shownError != null) {
@@ -402,10 +517,20 @@ private fun AccountEditorSheet(
                 onClick = {
                     val trimmed = name.trim()
                     val cents = if (balanceText.isBlank()) 0L else Money.parseCents(balanceText)
+                    val credit = if (creditText.isBlank()) 0L else Money.parseCents(creditText)
                     when {
                         trimmed.isEmpty() -> localError = "请输入名称"
                         cents == null -> localError = "初始金额格式不正确"
-                        else -> onSave(initial?.id ?: 0L, trimmed, cents, note.trim())
+                        credit == null -> localError = "信用额度格式不正确"
+                        else -> onSave(
+                            initial?.id ?: 0L,
+                            trimmed,
+                            cents,
+                            note.trim(),
+                            credit,
+                            makeDefault,
+                            if (sharedWith != 0L) sharedWith else null,
+                        )
                     }
                 },
             )

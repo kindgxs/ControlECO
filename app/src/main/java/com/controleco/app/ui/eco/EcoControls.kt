@@ -218,6 +218,7 @@ fun EcoChip(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     height: Dp = 30.dp,
+    onLongClick: (() -> Unit)? = null,
 ) {
     val c = MaterialTheme.eco
     val bg by animateColorAsState(if (selected) c.blueDeep else c.surface, tween(160), label = "chip-bg")
@@ -229,7 +230,7 @@ fun EcoChip(
             .background(bg)
             .border(1.dp, if (selected) Color.Transparent else c.rule, RoundedCornerShape(11.dp))
             .then(if (selected) Modifier.shadow(5.dp, RoundedCornerShape(11.dp), ambientColor = c.blueDeep.copy(alpha = .2f), spotColor = c.blueDeep.copy(alpha = .3f)) else Modifier)
-            .ecoPressable(scaleTo = 0.96f, onClick = onClick)
+            .ecoPressable(scaleTo = 0.96f, onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

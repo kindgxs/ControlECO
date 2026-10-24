@@ -82,6 +82,8 @@ fun EcoTopBar(
     modifier: Modifier = Modifier,
     low: String? = null,
     onBack: (() -> Unit)? = null,
+    /** 标题右侧的附加入口（如账单页的日历图标） */
+    titleLeading: (@Composable () -> Unit)? = null,
     action: @Composable RowScope.() -> Unit = {},
 ) {
     val c = MaterialTheme.eco
@@ -116,6 +118,10 @@ fun EcoTopBar(
                         color = c.muted,
                         maxLines = 1,
                     )
+                }
+                if (titleLeading != null) {
+                    Spacer(Modifier.width(6.dp))
+                    titleLeading()
                 }
             }
         }
