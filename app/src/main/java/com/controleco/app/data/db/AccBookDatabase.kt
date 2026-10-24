@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         InstallmentPlanEntity::class,
         RecurringPlanEntity::class,
     ],
-    version = 15,
+    version = 16,
     exportSchema = true,
 )
 abstract class AccBookDatabase : RoomDatabase() {
@@ -334,6 +334,41 @@ abstract class AccBookDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v16：分期 / 周期计划支持「出账时间」与自动入账。
+         * - 分期：新增 `postTimeMinutes`（当天分钟数，到点才生成账单）；
+         * - 周期：新增重复间隔、结束方式（永不 / 次数 / 日期）、出账时间、已入账次数与不扣资产期数。
+         * 全部带默认值，历史计划按原逻辑继续可用（已结束的周期计划由 nextDateMillis 判断）。
+         */
+        private val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE installment_plans ADD COLUMN postTimeMinutes INTEGER NOT NULL DEFAULT 540",
+                )
+                db.execSQL(
+                    "ALTER TABLE recurring_plans ADD COLUMN intervalCount INTEGER NOT NULL DEFAULT 1",
+                )
+                db.execSQL(
+                    "ALTER TABLE recurring_plans ADD COLUMN postTimeMinutes INTEGER NOT NULL DEFAULT 540",
+                )
+                db.execSQL(
+                    "ALTER TABLE recurring_plans ADD COLUMN endMode TEXT NOT NULL DEFAULT 'NEVER'",
+                )
+                db.execSQL(
+                    "ALTER TABLE recurring_plans ADD COLUMN endCount INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL(
+                    "ALTER TABLE recurring_plans ADD COLUMN endDateMillis INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL(
+                    "ALTER TABLE recurring_plans ADD COLUMN postedCount INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL(
+                    "ALTER TABLE recurring_plans ADD COLUMN excludeAssetPeriods TEXT NOT NULL DEFAULT ''",
+                )
+            }
+        }
+
         @Volatile
         private var instance: AccBookDatabase? = null
 
@@ -348,6 +383,7 @@ abstract class AccBookDatabase : RoomDatabase() {
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                         MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                         MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15,
+                        MIGRATION_15_16,
                     )
                     .build().also { instance = it }
             }

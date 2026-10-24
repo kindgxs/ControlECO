@@ -144,6 +144,9 @@ data class InstallmentPlanEntity(
     /** 单独指定「只记账、不扣资产」的期数：逗号分隔（例 "1,3,12"）；空 = 只按 deductAsset */
     @ColumnInfo(defaultValue = "")
     val excludeAssetPeriods: String = "",
+    /** 出账时间（当天 0 点起的分钟数，默认 09:00）：到点才自动入账 */
+    @ColumnInfo(defaultValue = "540")
+    val postTimeMinutes: Int = 540,
     val note: String = "",
     /** 已记期数（0..periods）：下一期的序号 = 已记期数 + 1 */
     @ColumnInfo(defaultValue = "0")
@@ -160,15 +163,36 @@ data class RecurringPlanEntity(
     val amountCents: Long,
     val categoryId: Long,
     val accountId: Long,
-    /** DAILY / WEEKLY / MONTHLY */
+    /** DAILY / WEEKLY / MONTHLY / YEARLY / EVERY_N_DAYS */
     val frequency: String,
+    /** 每隔多少个周期：仅 EVERY_N_DAYS 使用（每天=1、每月=1…） */
+    @ColumnInfo(defaultValue = "1")
+    val intervalCount: Int = 1,
     val firstDateMillis: Long,
-    /** 下次入账时间（毫秒） */
+    /** 下次入账时间（毫秒；Long.MAX_VALUE = 已结束） */
     val nextDateMillis: Long,
     @ColumnInfo(defaultValue = "1")
     val deductAsset: Boolean = true,
     @ColumnInfo(defaultValue = "0")
     val autoPost: Boolean = false,
+    /** 出账时间（当天 0 点起的分钟数，默认 09:00） */
+    @ColumnInfo(defaultValue = "540")
+    val postTimeMinutes: Int = 540,
+    /** NEVER / COUNT / DATE */
+    @ColumnInfo(defaultValue = "NEVER")
+    val endMode: String = "NEVER",
+    /** 按次数结束时：总共入账多少次（含首次） */
+    @ColumnInfo(defaultValue = "0")
+    val endCount: Int = 0,
+    /** 按日期结束时：最后一次不得晚于该日期（毫秒，0 = 未设置） */
+    @ColumnInfo(defaultValue = "0")
+    val endDateMillis: Long = 0,
+    /** 已入账次数（用于按次数结束与「不扣资产期数」） */
+    @ColumnInfo(defaultValue = "0")
+    val postedCount: Int = 0,
+    /** 单独指定「只记账、不扣资产」的次数（与分期同格式：1,3,12 或 1-3,6） */
+    @ColumnInfo(defaultValue = "")
+    val excludeAssetPeriods: String = "",
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
 )

@@ -54,6 +54,9 @@ import com.controleco.app.data.model.AssetSummary
 import com.controleco.app.data.model.BillSource
 import com.controleco.app.data.plan.PLAN_TX_TYPE
 import com.controleco.app.data.plan.InstallmentMath
+import com.controleco.app.data.plan.PlanAutoPoster
+import com.controleco.app.data.plan.PlanScheduler
+import com.controleco.app.data.plan.RecurringEndMode
 import com.controleco.app.data.plan.RecurringFrequency
 import com.controleco.app.data.plan.RecurringMath
 import com.controleco.app.data.model.ImportCommitResult
@@ -128,6 +131,17 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         if (now != todayRef.value) {
             todayRef.value = now
             AppLog.i("home", "today=$now")
+        }
+        catchUpDuePlans()
+    }
+
+    /** 回到前台 / 分期页停留时补记到点的分期与周期账单 */
+    fun catchUpDuePlans() {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                PlanAutoPoster.postDue(db, zone = zone)
+                PlanScheduler.schedule(getApplication(), db)
+            }
         }
     }
 
@@ -389,6 +403,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         // 与 UI 首帧并行，而不是等页面来查时才付（配合"未就绪先不画"减少空白时间）
         viewModelScope.launch(Dispatchers.IO) {
             runCatching { txDao.countAll() }
+            // 冷启动补记：App 没运行时已到点的分期/周期，下一次打开就按原定时间入账
+            runCatching {
+                PlanAutoPoster.postDue(db, zone = zone)
+                PlanScheduler.schedule(getApplication(), db)
+            }
         }
         // 卡面图片同样在启动时就开始解码（先缩略图再全尺寸）
         loadCardImage(_cardImageUri.value)
@@ -1780,6 +1799,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         firstDateMillis: Long,
         deductAsset: Boolean,
         excludeAssetPeriods: String = "",
+        postTimeMinutes: Int = 540,
         note: String = "",
         onResult: (String?) -> Unit,
     ) {
@@ -1806,11 +1826,14 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         InstallmentMath.parseExcludedPeriods(excludeAssetPeriods, periods),
                         periods,
                     ),
+                    postTimeMinutes = postTimeMinutes.coerceIn(0, 24 * 60 - 1),
                     note = note,
                     postedPeriods = oldPlan?.postedPeriods ?: 0,
                     createdAt = oldPlan?.createdAt ?: System.currentTimeMillis(),
                 )
                 if (id > 0) planDao.updateInstallment(entity) else planDao.insertInstallment(entity)
+                PlanAutoPoster.postDue(db, zone = zone)
+                PlanScheduler.schedule(getApplication(), db)
                 mainResult(onResult, null)
             } catch (e: Exception) {
                 AppLog.e("plan", "save installment failed", e)
@@ -1829,6 +1852,12 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         frequency: RecurringFrequency,
         firstDateMillis: Long,
         deductAsset: Boolean,
+        intervalCount: Int = 1,
+        postTimeMinutes: Int = 540,
+        endMode: RecurringEndMode = RecurringEndMode.NEVER,
+        endCount: Int = 0,
+        endDateMillis: Long = 0L,
+        excludeAssetPeriods: String = "",
         autoPost: Boolean = false,
         note: String = "",
         onResult: (String?) -> Unit,
@@ -1838,10 +1867,31 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 if (title.isBlank()) { mainResult(onResult, "请输入名称"); return@launch }
                 if (amountCents <= 0L) { mainResult(onResult, "请输入金额"); return@launch }
                 if (categoryId <= 0L || accountId <= 0L) { mainResult(onResult, "请选择账户和分类"); return@launch }
+                if (frequency == RecurringFrequency.EVERY_N_DAYS &&
+                    intervalCount !in 1..3650
+                ) {
+                    mainResult(onResult, "间隔天数需在 1~3650 之间"); return@launch
+                }
+                if (endMode == RecurringEndMode.COUNT && endCount !in 1..InstallmentMath.MAX_PERIOD_INDEX) {
+                    mainResult(onResult, "结束次数需在 1~${InstallmentMath.MAX_PERIOD_INDEX} 之间"); return@launch
+                }
+                if (endMode == RecurringEndMode.DATE && endDateMillis <= 0L) {
+                    mainResult(onResult, "请选择结束日期"); return@launch
+                }
                 val old = if (id > 0) planDao.getRecurring(id) else null
                 val first = RecurringMath.dateOf(firstDateMillis, zone)
-                val next = if (id > 0 && old != null) old.nextDateMillis
-                else RecurringMath.millisAt(RecurringMath.next(first, frequency), zone)
+                val firstAt = RecurringMath.millisAtMinutes(first, postTimeMinutes, zone)
+                val next = when {
+                    old == null -> firstAt
+                    old.nextDateMillis >= RecurringMath.NO_NEXT -> RecurringMath.NO_NEXT
+                    // 还没记过 → 用新的首期；已记过 → 保留待出账的那一天，只按新出账时间重挂
+                    old.postedCount == 0 -> firstAt
+                    else -> RecurringMath.millisAtMinutes(
+                        RecurringMath.dateOf(old.nextDateMillis, zone),
+                        postTimeMinutes.coerceIn(0, 24 * 60 - 1),
+                        zone,
+                    )
+                }
                 val entity = RecurringPlanEntity(
                     id = id,
                     title = title.trim(),
@@ -1850,14 +1900,36 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     categoryId = categoryId,
                     accountId = accountId,
                     frequency = frequency.name,
+                    intervalCount = if (frequency == RecurringFrequency.EVERY_N_DAYS) {
+                        intervalCount.coerceIn(1, 3650)
+                    } else {
+                        1
+                    },
                     firstDateMillis = firstDateMillis,
                     nextDateMillis = next,
                     deductAsset = deductAsset,
                     autoPost = autoPost,
+                    postTimeMinutes = postTimeMinutes.coerceIn(0, 24 * 60 - 1),
+                    endMode = endMode.name,
+                    endCount = if (endMode == RecurringEndMode.COUNT) {
+                        endCount.coerceIn(1, InstallmentMath.MAX_PERIOD_INDEX)
+                    } else {
+                        0
+                    },
+                    endDateMillis = if (endMode == RecurringEndMode.DATE) endDateMillis else 0L,
+                    postedCount = old?.postedCount ?: 0,
+                    excludeAssetPeriods = InstallmentMath.encodeExcludedPeriods(
+                        InstallmentMath.parseExcludedPeriods(
+                            excludeAssetPeriods, InstallmentMath.MAX_PERIOD_INDEX,
+                        ),
+                        InstallmentMath.MAX_PERIOD_INDEX,
+                    ),
                     note = note,
                     createdAt = old?.createdAt ?: System.currentTimeMillis(),
                 )
                 if (id > 0) planDao.updateRecurring(entity) else planDao.insertRecurring(entity)
+                PlanAutoPoster.postDue(db, zone = zone)
+                PlanScheduler.schedule(getApplication(), db)
                 mainResult(onResult, null)
             } catch (e: Exception) {
                 AppLog.e("plan", "save recurring failed", e)
@@ -1898,26 +1970,41 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 val plan = planDao.getInstallment(id) ?: run { mainResult(onDone, "计划不存在"); return@launch }
                 if (plan.postedPeriods >= plan.periods) { mainResult(onDone, "该计划已全部记完"); return@launch }
                 val index = plan.postedPeriods + 1
-                val date = InstallmentMath.periodDate(RecurringMath.dateOf(plan.firstDateMillis, zone), index)
+                val firstDate = RecurringMath.dateOf(plan.firstDateMillis, zone)
+                val dueAt = InstallmentMath.periodMillis(firstDate, index, plan.postTimeMinutes, zone)
                 val amount = InstallmentMath.periodTotal(
                     plan.totalPrincipalCents, plan.totalInterestCents, plan.periods, index,
                 )
                 if (amount <= 0L) { mainResult(onDone, "该期金额为 0"); return@launch }
-                txDao.insert(
-                    TransactionEntity(
-                        type = PLAN_TX_TYPE,
-                        amountCents = amount,
-                        categoryId = plan.categoryId,
-                        accountId = plan.accountId,
-                        timestamp = RecurringMath.millisAt(date, zone),
-                        note = plan.note.ifBlank { "${plan.title} 第${index}/${plan.periods}期" },
-                        counterparty = plan.title,
-                        source = TxSource.MANUAL,
-                        excludeFromAssets = InstallmentMath.excludesAsset(
-                            plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
+                if (System.currentTimeMillis() < dueAt) {
+                    val dueDate = InstallmentMath.periodDate(firstDate, index)
+                    mainResult(
+                        onDone,
+                        "未到出账时间（${dueDate.monthValue}/${dueDate.dayOfMonth} " +
+                            "${InstallmentMath.timeText(plan.postTimeMinutes)} 自动入账）",
+                    )
+                    return@launch
+                }
+                // 与自动入账共用同一把唯一键：重复点击 / 闹钟并发都不会写出两笔
+                val key = "PLAN_INST:${plan.id}:$index"
+                if (txDao.findIdByExternalId(key) == null) {
+                    txDao.insert(
+                        TransactionEntity(
+                            type = PLAN_TX_TYPE,
+                            amountCents = amount,
+                            categoryId = plan.categoryId,
+                            accountId = plan.accountId,
+                            timestamp = dueAt,
+                            note = plan.note.ifBlank { "${plan.title} 第${index}/${plan.periods}期" },
+                            counterparty = plan.title,
+                            source = TxSource.MANUAL,
+                            externalId = key,
+                            excludeFromAssets = InstallmentMath.excludesAsset(
+                                plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
+                            ),
                         ),
-                    ),
-                )
+                    )
+                }
                 planDao.updateInstallment(plan.copy(postedPeriods = index))
                 AppLog.i("plan", "installment #$id posted period $index")
                 mainResult(onDone, null)
@@ -1933,23 +2020,57 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val plan = planDao.getRecurring(id) ?: run { mainResult(onDone, "计划不存在"); return@launch }
-                val date = RecurringMath.dateOf(plan.nextDateMillis, zone)
-                txDao.insert(
-                    TransactionEntity(
-                        type = plan.type,
-                        amountCents = plan.amountCents,
-                        categoryId = plan.categoryId,
-                        accountId = plan.accountId,
-                        timestamp = RecurringMath.millisAt(date, zone),
-                        note = plan.note.ifBlank { plan.title },
-                        counterparty = plan.title,
-                        source = TxSource.MANUAL,
-                        excludeFromAssets = !plan.deductAsset,
+                if (plan.nextDateMillis >= RecurringMath.NO_NEXT) {
+                    mainResult(onDone, "该计划已结束"); return@launch
+                }
+                val index = plan.postedCount + 1
+                val dueAt = plan.nextDateMillis
+                if (System.currentTimeMillis() < dueAt) {
+                    val dueDate = RecurringMath.dateOf(dueAt, zone)
+                    mainResult(
+                        onDone,
+                        "未到出账时间（${dueDate.monthValue}/${dueDate.dayOfMonth} " +
+                            "${InstallmentMath.timeText(plan.postTimeMinutes)} 自动入账）",
+                    )
+                    return@launch
+                }
+                val date = RecurringMath.dateOf(dueAt, zone)
+                // 与自动入账共用同一把唯一键，重复点击不会重复入账
+                val key = "PLAN_REC:${plan.id}:$index"
+                if (txDao.findIdByExternalId(key) == null) {
+                    txDao.insert(
+                        TransactionEntity(
+                            type = plan.type,
+                            amountCents = plan.amountCents,
+                            categoryId = plan.categoryId,
+                            accountId = plan.accountId,
+                            timestamp = dueAt,
+                            note = plan.note.ifBlank { plan.title },
+                            counterparty = plan.title,
+                            source = TxSource.MANUAL,
+                            externalId = key,
+                            excludeFromAssets = InstallmentMath.excludesAssetAt(
+                                plan.deductAsset, plan.excludeAssetPeriods, index,
+                            ),
+                        ),
+                    )
+                }
+                val frequency = RecurringFrequency.of(plan.frequency)
+                val endMode = RecurringEndMode.of(plan.endMode)
+                val next = RecurringMath.next(date, frequency, plan.intervalCount)
+                val ended = RecurringMath.endedAfter(
+                    endMode, plan.endCount, plan.endDateMillis, index, next, zone,
+                )
+                planDao.updateRecurring(
+                    plan.copy(
+                        postedCount = index,
+                        nextDateMillis = if (ended) {
+                            RecurringMath.NO_NEXT
+                        } else {
+                            RecurringMath.millisAtMinutes(next, plan.postTimeMinutes, zone)
+                        },
                     ),
                 )
-                val frequency = RecurringFrequency.of(plan.frequency)
-                val next = RecurringMath.next(date, frequency)
-                planDao.updateRecurring(plan.copy(nextDateMillis = RecurringMath.millisAt(next, zone)))
                 AppLog.i("plan", "recurring #$id posted, next=$next")
                 mainResult(onDone, null)
             } catch (e: Exception) {
@@ -2049,6 +2170,41 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.i("settings", "homeQuickAdd=$enabled")
     }
 
+    // ---------- 首页资产：共用额度组显示哪张卡 ----------
+
+    private val _assetCardPick = MutableStateFlow(loadAssetCardPick())
+
+    /** 共用额度组 → 首页展示的那张卡（组内流水同步，资产只算一次） */
+    val assetCardPick: StateFlow<Map<Long, Long>> = _assetCardPick
+
+    fun setAssetCardPick(groupId: Long, accountId: Long) {
+        if (groupId <= 0L || accountId <= 0L) return
+        val next = _assetCardPick.value.toMutableMap()
+        next[groupId] = accountId
+        prefs.edit()
+            .putString(KEY_ASSET_CARD_PICK, next.entries.joinToString(",") { "${it.key}:${it.value}" })
+            .apply()
+        _assetCardPick.value = next
+        AppLog.i("settings", "assetCard group=$groupId account=$accountId")
+    }
+
+    private fun loadAssetCardPick(): Map<Long, Long> {
+        val raw = prefs.getString(KEY_ASSET_CARD_PICK, null) ?: return emptyMap()
+        return raw.split(',')
+            .mapNotNull { token ->
+                val parts = token.split(':')
+                if (parts.size != 2) return@mapNotNull null
+                val group = parts[0].toLongOrNull()
+                val account = parts[1].toLongOrNull()
+                if (group != null && account != null && group > 0L && account > 0L) {
+                    group to account
+                } else {
+                    null
+                }
+            }
+            .toMap()
+    }
+
     private companion object {
         const val PREFS_NAME = "settings"
         const val KEY_CARD_IMAGE = "card_image_uri"
@@ -2068,6 +2224,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_DEPOSIT_MONTH_GOAL_PREFIX = "deposit_goal_month_"
         const val KEY_SUBCAT_ROLLUP = "subcategory_rollup_mode"
         const val KEY_HOME_QUICK_ADD = "home_quick_add_enabled"
+        const val KEY_ASSET_CARD_PICK = "asset_card_pick"
         const val MODE_PERCENT = "percent"
         const val MODE_AMOUNT = "amount"
     }

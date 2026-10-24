@@ -1,6 +1,5 @@
 package com.controleco.app.ui.plan
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,9 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -29,7 +26,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.LedgerViewModel
@@ -39,6 +35,7 @@ import com.controleco.app.data.db.InstallmentPlanEntity
 import com.controleco.app.data.db.RecurringPlanEntity
 import com.controleco.app.data.db.TxType
 import com.controleco.app.data.plan.InstallmentMath
+import com.controleco.app.data.plan.RecurringEndMode
 import com.controleco.app.data.plan.RecurringFrequency
 import com.controleco.app.data.plan.RecurringMath
 import com.controleco.app.ui.common.EcoIcons
@@ -50,6 +47,8 @@ import com.controleco.app.ui.eco.EcoGhostButton
 import com.controleco.app.ui.eco.EcoMoneyField
 import com.controleco.app.ui.eco.EcoPageNote
 import com.controleco.app.ui.eco.EcoPane
+import com.controleco.app.ui.eco.EcoPill
+import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoRowDivider
 import com.controleco.app.ui.eco.EcoSegmented
 import com.controleco.app.ui.eco.EcoSheet
@@ -71,11 +70,48 @@ private enum class PlanTab(val label: String) {
     RECURRING("周期记账"),
 }
 
+/** 分期编辑卡提交的数据 */
+private data class InstallmentDraft(
+    val id: Long,
+    val title: String,
+    val accountId: Long,
+    val categoryId: Long,
+    val principalCents: Long,
+    val interestCents: Long,
+    val periods: Int,
+    val firstDate: LocalDate,
+    val postTimeMinutes: Int,
+    val deductAsset: Boolean,
+    val excludeAssetPeriods: String,
+    val note: String,
+)
+
+/** 周期编辑卡提交的数据 */
+private data class RecurringDraft(
+    val id: Long,
+    val title: String,
+    val type: TxType,
+    val amountCents: Long,
+    val categoryId: Long,
+    val accountId: Long,
+    val frequency: RecurringFrequency,
+    val intervalCount: Int,
+    val firstDate: LocalDate,
+    val postTimeMinutes: Int,
+    val deductAsset: Boolean,
+    val excludeAssetPeriods: String,
+    val endMode: RecurringEndMode,
+    val endCount: Int,
+    val endDate: LocalDate?,
+    val note: String,
+)
+
 /**
  * 分期 · 周期（功能2）：信用卡分期与固定周期账单。
  *
  * 分期每期 = 本金份额 + 利息份额；总利息留空时按「每期 0.60% × 期数」自动算。
- * 两种计划都支持「只记账、不扣资产」。
+ * 两种计划都支持「只记账、不扣资产」，并且都可以设置出账时间：
+ * 到「计划日期 + 出账时间」才自动生成账单（早于该时刻不会提前入账）。
  */
 @Composable
 fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
@@ -108,13 +144,13 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
 
     fun postInstallment(plan: InstallmentPlanEntity) {
         vm.postInstallment(plan.id) { err ->
-            EcoToast.show(err ?: "已记下第 ${plan.postedPeriods + 1} 期", if (err == null) com.controleco.app.ui.eco.EcoPillTone.Good else com.controleco.app.ui.eco.EcoPillTone.Bad)
+            EcoToast.show(err ?: "已记下第 ${plan.postedPeriods + 1} 期", if (err == null) EcoPillTone.Good else EcoPillTone.Bad)
         }
     }
 
     fun postRecurring(plan: RecurringPlanEntity) {
         vm.postRecurring(plan.id) { err ->
-            EcoToast.show(err ?: "已记一笔", if (err == null) com.controleco.app.ui.eco.EcoPillTone.Good else com.controleco.app.ui.eco.EcoPillTone.Bad)
+            EcoToast.show(err ?: "已记一笔", if (err == null) EcoPillTone.Good else EcoPillTone.Bad)
         }
     }
 
@@ -141,7 +177,7 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
                             EcoEmpty(
                                 title = "还没有分期计划",
-                                body = "建立信用卡分期后，按期点「记一期」即可入账",
+                                body = "建立信用卡分期后，到出账时间会自动记一期",
                                 icon = EcoIcons.Calendar,
                             )
                         }
@@ -164,7 +200,7 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
                             EcoEmpty(
                                 title = "还没有周期计划",
-                                body = "建立周期账单后，到期点「记一笔」即可入账",
+                                body = "建立周期账单后，到出账时间会自动记一笔",
                                 icon = EcoIcons.Clock,
                             )
                         }
@@ -186,9 +222,11 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 EcoPageNote(
                     if (tab == 0) {
                         "每期金额 = 该期本金 + 该期利息；总利息留空时按每期 0.60% × 期数自动计算。" +
+                            "账单只在「计划日期 + 出账时间」到点后生成，未出账的期数不计入流水；" +
                             "开启「只记账不扣资产」后，入账记录不会改变账户余额。"
                     } else {
-                        "周期账单到期后需要手动点「记一笔」，入账后自动顺延到下一个周期。" +
+                        "周期账单到「计划日期 + 出账时间」才生成并顺延到下一个周期；" +
+                            "可设置永不结束、按次数结束或按日期结束。" +
                             "开启「只记账不扣资产」后，入账记录不会改变账户余额。"
                     },
                 )
@@ -210,13 +248,21 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             initial = editingInstallment,
             accounts = accounts,
             categories = categories,
-            onSave = { id, title, accountId, categoryId, principal, interest, periods, firstDate, deduct, excludePeriods, note, onResult ->
+            onSave = { draft, onResult ->
                 vm.saveInstallment(
-                    id = id, title = title, accountId = accountId, categoryId = categoryId,
-                    totalPrincipalCents = principal, totalInterestCents = interest,
-                    periods = periods, firstDateMillis = RecurringMath.millisAt(firstDate),
-                    deductAsset = deduct, excludeAssetPeriods = excludePeriods,
-                    note = note, onResult = onResult,
+                    id = draft.id,
+                    title = draft.title,
+                    accountId = draft.accountId,
+                    categoryId = draft.categoryId,
+                    totalPrincipalCents = draft.principalCents,
+                    totalInterestCents = draft.interestCents,
+                    periods = draft.periods,
+                    firstDateMillis = RecurringMath.millisAt(draft.firstDate),
+                    deductAsset = draft.deductAsset,
+                    excludeAssetPeriods = draft.excludeAssetPeriods,
+                    postTimeMinutes = draft.postTimeMinutes,
+                    note = draft.note,
+                    onResult = onResult,
                 )
             },
             onDelete = editingInstallment?.let { plan ->
@@ -232,12 +278,25 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             initial = editingRecurring,
             accounts = accounts,
             categories = categories,
-            onSave = { id, title, type, amount, categoryId, accountId, frequency, firstDate, deduct, note, onResult ->
+            onSave = { draft, onResult ->
                 vm.saveRecurring(
-                    id = id, title = title, type = type, amountCents = amount,
-                    categoryId = categoryId, accountId = accountId, frequency = frequency,
-                    firstDateMillis = RecurringMath.millisAt(firstDate), deductAsset = deduct,
-                    note = note, onResult = onResult,
+                    id = draft.id,
+                    title = draft.title,
+                    type = draft.type,
+                    amountCents = draft.amountCents,
+                    categoryId = draft.categoryId,
+                    accountId = draft.accountId,
+                    frequency = draft.frequency,
+                    firstDateMillis = RecurringMath.millisAt(draft.firstDate),
+                    deductAsset = draft.deductAsset,
+                    intervalCount = draft.intervalCount,
+                    postTimeMinutes = draft.postTimeMinutes,
+                    endMode = draft.endMode,
+                    endCount = draft.endCount,
+                    endDateMillis = draft.endDate?.let { RecurringMath.millisAt(it) } ?: 0L,
+                    excludeAssetPeriods = draft.excludeAssetPeriods,
+                    note = draft.note,
+                    onResult = onResult,
                 )
             },
             onDelete = editingRecurring?.let { plan ->
@@ -266,8 +325,15 @@ private fun InstallmentCard(
     val done = plan.postedPeriods >= plan.periods
     val nextIndex = (plan.postedPeriods + 1).coerceAtMost(plan.periods)
     val nextDate = InstallmentMath.periodDate(firstDate, nextIndex)
+    val timeText = InstallmentMath.timeText(plan.postTimeMinutes)
+    // 只有到了「当期日期 + 出账时间」才允许手动记账，避免提前把未出账的期数记进流水
+    val canPost = !done && System.currentTimeMillis() >=
+        InstallmentMath.periodMillis(firstDate, nextIndex, plan.postTimeMinutes)
     val perCents = InstallmentMath.periodTotal(
         plan.totalPrincipalCents, plan.totalInterestCents, plan.periods, nextIndex,
+    )
+    val unposted = InstallmentMath.unpostedTotal(
+        plan.totalPrincipalCents, plan.totalInterestCents, plan.periods, plan.postedPeriods,
     )
     EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
         Column(Modifier.fillMaxWidth()) {
@@ -317,7 +383,7 @@ private fun InstallmentCard(
                     if (done) {
                         "已全部记完 · 总还款 ${Money.formatYuanGroupedFixed(InstallmentMath.totalRepayment(plan.totalPrincipalCents, plan.totalInterestCents))}"
                     } else {
-                        "已记 ${plan.postedPeriods} 期 · 下期 ${nextDate.monthValue}/${nextDate.dayOfMonth} · 每期 " +
+                        "已记 ${plan.postedPeriods} 期 · 下期 ${nextDate.monthValue}/${nextDate.dayOfMonth} $timeText · 每期 " +
                             Money.formatYuanGroupedFixed(perCents) +
                             " （本金 ${Money.formatYuanGroupedFixed(InstallmentMath.principalOf(plan.totalPrincipalCents, plan.periods, nextIndex))}" +
                             " + 利息 ${Money.formatYuanGroupedFixed(InstallmentMath.interestOf(plan.totalInterestCents, plan.periods, nextIndex))}）"
@@ -332,12 +398,20 @@ private fun InstallmentCard(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("总本金 ${Money.formatYuanGroupedFixed(plan.totalPrincipalCents)}", style = EcoType.PageNote, color = c.quiet)
+                Text(
+                    "未出账 ${Money.formatYuanGroupedFixed(unposted)}",
+                    style = EcoType.PageNote,
+                    color = if (unposted > 0L) c.amber else c.quiet,
+                )
                 Spacer(Modifier.weight(1f))
                 EcoTextAction(
-                    text = if (done) "已记完" else "记一期",
+                    text = when {
+                        done -> "已记完"
+                        canPost -> "记一期"
+                        else -> "未到出账"
+                    },
                     onClick = onPost,
-                    enabled = !done,
+                    enabled = canPost,
                 )
             }
         }
@@ -354,7 +428,12 @@ private fun RecurringCard(
 ) {
     val c = MaterialTheme.eco
     val frequency = RecurringFrequency.of(plan.frequency)
-    val nextDate = RecurringMath.dateOf(plan.nextDateMillis)
+    val endMode = RecurringEndMode.of(plan.endMode)
+    val ended = plan.nextDateMillis >= RecurringMath.NO_NEXT
+    val nextDate = if (ended) null else RecurringMath.dateOf(plan.nextDateMillis)
+    val timeText = InstallmentMath.timeText(plan.postTimeMinutes)
+    // 未到「下次日期 + 出账时间」不允许提前入账
+    val canPost = !ended && plan.nextDateMillis <= System.currentTimeMillis()
     EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
         Column(Modifier.fillMaxWidth()) {
             Column(
@@ -382,29 +461,58 @@ private fun RecurringCard(
                 Text(
                     buildString {
                         append(accountName).append(" · ").append(categoryName)
-                        append(" · ").append(frequency.label)
+                        append(" · ").append(RecurringMath.describe(frequency, plan.intervalCount))
                         if (!plan.deductAsset) append(" · 不扣资产")
                     },
                     style = EcoType.RowSub,
                     color = c.muted,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(6.dp))
-                Text(
-                    "下次 ${nextDate.year}/${nextDate.monthValue}/${nextDate.dayOfMonth}",
-                    style = EcoType.PageNote,
-                    color = c.quiet,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        if (nextDate == null) {
+                            "已结束"
+                        } else {
+                            "下次 ${nextDate.year}/${nextDate.monthValue}/${nextDate.dayOfMonth} $timeText"
+                        },
+                        style = EcoType.PageNote,
+                        color = c.quiet,
+                    )
+                    if (endMode != RecurringEndMode.NEVER && !ended) {
+                        Spacer(Modifier.weight(1f))
+                        EcoPill(
+                            if (endMode == RecurringEndMode.COUNT) {
+                                "共 ${plan.endCount} 次"
+                            } else {
+                                "至 ${RecurringMath.dateOf(plan.endDateMillis)}"
+                            },
+                            EcoPillTone.Neutral,
+                        )
+                    }
+                }
             }
             EcoRowDivider(inset = 16.dp)
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("首期 ${RecurringMath.dateOf(plan.firstDateMillis)}", style = EcoType.PageNote, color = c.quiet)
+                Text(
+                    "首期 ${RecurringMath.dateOf(plan.firstDateMillis)}",
+                    style = EcoType.PageNote,
+                    color = c.quiet,
+                )
                 Spacer(Modifier.weight(1f))
-                EcoTextAction(text = "记一笔", onClick = onPost)
+                EcoTextAction(
+                    text = when {
+                        ended -> "已结束"
+                        canPost -> "记一笔"
+                        else -> "未到出账"
+                    },
+                    onClick = onPost,
+                    enabled = canPost,
+                )
             }
         }
     }
@@ -422,11 +530,12 @@ private fun monthOptions(): List<Pair<Long, String>> = (1..12).map { it.toLong()
 private fun dayOptions(month: YearMonth): List<Pair<Long, String>> =
     (1..month.lengthOfMonth()).map { it.toLong() to "$it 日" }
 
-/** 年 / 月 / 日三段下拉（首期日期） */
+/** 年 / 月 / 日三段下拉（首期 / 结束日期共用） */
 @Composable
 private fun DateDropdowns(
     date: LocalDate,
     onChange: (LocalDate) -> Unit,
+    yearLabel: String = "首期年份",
 ) {
     val month = YearMonth.of(date.year, date.monthValue)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -437,7 +546,7 @@ private fun DateDropdowns(
                 val target = YearMonth.of(year.toInt(), date.monthValue)
                 onChange(target.atDay(date.dayOfMonth.coerceAtMost(target.lengthOfMonth())))
             },
-            label = "首期年份",
+            label = yearLabel,
             modifier = Modifier.weight(1f),
         )
         TxSelectField(
@@ -460,6 +569,38 @@ private fun DateDropdowns(
     }
 }
 
+/** 出账时间：小时 + 分钟（当天 0 点起的分钟数） */
+@Composable
+private fun TimeDropdowns(
+    minutes: Int,
+    onChange: (Int) -> Unit,
+) {
+    val hour = (minutes / 60).coerceIn(0, 23)
+    val minute = (minutes % 60).coerceIn(0, 59)
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        TxSelectField(
+            value = "%02d 时".format(hour),
+            options = (0..23).map { it.toLong() to "%02d 时".format(it) },
+            onSelect = { h -> onChange((h.toInt() * 60 + minute).coerceIn(0, 1439)) },
+            label = "出账小时",
+            modifier = Modifier.weight(1f),
+        )
+        TxSelectField(
+            value = "%02d 分".format(minute),
+            options = (0..59).map { it.toLong() to "%02d 分".format(it) },
+            onSelect = { m -> onChange((hour * 60 + m.toInt()).coerceIn(0, 1439)) },
+            label = "出账分钟",
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * 分类选择：先选一级分类，再选二级分类（二级可不选）。
+ *
+ * 只选一级时账单落在该一级分类上；选了二级时落在二级分类上，
+ * 预算/统计仍按所属一级分类汇总。
+ */
 @Composable
 private fun AccountCategoryFields(
     accounts: List<AccountEntity>,
@@ -470,14 +611,18 @@ private fun AccountCategoryFields(
     onAccount: (Long) -> Unit,
     onCategory: (Long) -> Unit,
 ) {
-    // 分类下拉同时列出一级分类与它下面的二级分类，选哪一级都能直接落库
-    val categoryOptions = remember(categories, type) {
-        CategoryTree.topLevel(categories, type).flatMap { top ->
-            listOf(top.id to top.name) +
-                CategoryTree.childrenOf(categories, top.id).map { child ->
-                    child.id to "${top.name} / ${child.name}"
-                }
+    val topCategories = remember(categories, type) { CategoryTree.topLevel(categories, type) }
+    val selectedTop = remember(categories, categoryId) {
+        categories.firstOrNull { it.id == categoryId }?.let { cat ->
+            if (cat.parentId == null) cat else categories.firstOrNull { it.id == cat.parentId }
         }
+    }
+    val children = remember(categories, selectedTop) {
+        selectedTop?.let { CategoryTree.childrenOf(categories, it.id) }.orEmpty()
+    }
+    val childLabel = remember(categories, categoryId, selectedTop) {
+        val cat = categories.firstOrNull { it.id == categoryId }
+        if (cat?.parentId != null && cat.parentId == selectedTop?.id) cat.name else "不指定"
     }
 
     TxSelectField(
@@ -489,20 +634,32 @@ private fun AccountCategoryFields(
     )
     Spacer(Modifier.height(12.dp))
     TxSelectField(
-        value = CategoryTree.displayName(categories, categoryId),
-        options = categoryOptions,
-        onSelect = onCategory,
-        label = "分类",
-        placeholder = "选择一级 / 二级分类",
+        value = selectedTop?.name.orEmpty(),
+        options = topCategories.map { it.id to it.name },
+        onSelect = { id -> onCategory(id) },
+        label = "一级分类",
+        placeholder = "选择一级分类",
     )
-    if (categoryOptions.any { (id, _) -> categories.firstOrNull { it.id == id }?.parentId != null }) {
-        Spacer(Modifier.height(5.dp))
-        Text(
-            "带「/」的是二级分类，只计入所属一级分类的预算与统计",
-            style = EcoType.PageNote,
-            color = MaterialTheme.eco.quiet,
-        )
-    }
+    Spacer(Modifier.height(12.dp))
+    TxSelectField(
+        value = childLabel,
+        options = listOf(0L to "不指定（只记一级）") + children.map { it.id to it.name },
+        onSelect = { id ->
+            if (id <= 0L) {
+                selectedTop?.let { onCategory(it.id) }
+            } else {
+                onCategory(id)
+            }
+        },
+        label = "二级分类（可选）",
+        placeholder = if (selectedTop == null) "请先选择一级分类" else "选择二级分类",
+    )
+    Spacer(Modifier.height(5.dp))
+    Text(
+        "二级分类可以不选；只选一级时按一级分类记账与统计",
+        style = EcoType.PageNote,
+        color = MaterialTheme.eco.quiet,
+    )
 }
 
 @Composable
@@ -510,9 +667,7 @@ private fun InstallmentEditorSheet(
     initial: InstallmentPlanEntity?,
     accounts: List<AccountEntity>,
     categories: List<CategoryEntity>,
-    onSave: (
-        Long, String, Long, Long, Long, Long, Int, LocalDate, Boolean, String, String, (String?) -> Unit,
-    ) -> Unit,
+    onSave: (InstallmentDraft, (String?) -> Unit) -> Unit,
     onDelete: (((String?) -> Unit) -> Unit)?,
     onClose: () -> Unit,
 ) {
@@ -528,6 +683,7 @@ private fun InstallmentEditorSheet(
     var firstDate by remember(initial?.id) {
         mutableStateOf(initial?.let { RecurringMath.dateOf(it.firstDateMillis) } ?: LocalDate.now())
     }
+    var postTimeMinutes by remember(initial?.id) { mutableIntStateOf(initial?.postTimeMinutes ?: 540) }
     var accountId by remember(initial?.id) { mutableStateOf(initial?.accountId ?: (accounts.firstOrNull()?.id ?: 0L)) }
     var categoryId by remember(initial?.id) { mutableStateOf(initial?.categoryId ?: 0L) }
     var deduct by remember(initial?.id) { mutableStateOf(initial?.deductAsset ?: true) }
@@ -545,6 +701,11 @@ private fun InstallmentEditorSheet(
         else -> 0L
     }
     val perPeriod = if (periods > 0) InstallmentMath.periodTotal(principal, interest, periods, 1) else 0L
+    // 下一期待出账日期（首期按已有进度顺延，仅用于提示文案）
+    val nextDue = InstallmentMath.periodDate(
+        firstDate,
+        ((initial?.postedPeriods ?: 0) + 1).coerceAtMost(if (periods > 0) periods else 1),
+    )
 
     EcoSheet(onDismiss = onClose, title = if (initial == null) "新增分期" else "编辑分期") {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -575,6 +736,14 @@ private fun InstallmentEditorSheet(
                 supporting = "1 ~ ${InstallmentMath.MAX_PERIODS} 期",
             )
             DateDropdowns(date = firstDate, onChange = { firstDate = it })
+            Text("出账时间", style = EcoType.PageNote, color = c.muted)
+            TimeDropdowns(minutes = postTimeMinutes, onChange = { postTimeMinutes = it })
+            Text(
+                "下一期将在「${nextDue.monthValue} 月 ${nextDue.dayOfMonth} 日 ${InstallmentMath.timeText(postTimeMinutes)}」" +
+                    "自动生成账单；提前不入账，账户里只显示未出账金额",
+                style = EcoType.PageNote,
+                color = c.quiet,
+            )
             AccountCategoryFields(
                 accounts = accounts,
                 categories = categories,
@@ -636,12 +805,26 @@ private fun InstallmentEditorSheet(
                         deduct && excludeInvalid ->
                             localError = "不扣资产的期数需在 1~$periods 之间，可写 1-3,6"
                         accountId <= 0L -> localError = "请选择账户"
-                        categoryId <= 0L -> localError = "请选择分类"
+                        categoryId <= 0L -> localError = "请选择一级分类"
                         else -> onSave(
-                            initial?.id ?: 0L, title.trim(), accountId, categoryId,
-                            principal, interest, periods, firstDate, deduct,
-                            if (deduct) InstallmentMath.encodeExcludedPeriods(excludeSet, periods) else "",
-                            note.trim(),
+                            InstallmentDraft(
+                                id = initial?.id ?: 0L,
+                                title = title.trim(),
+                                accountId = accountId,
+                                categoryId = categoryId,
+                                principalCents = principal,
+                                interestCents = interest,
+                                periods = periods,
+                                firstDate = firstDate,
+                                postTimeMinutes = postTimeMinutes,
+                                deductAsset = deduct,
+                                excludeAssetPeriods = if (deduct) {
+                                    InstallmentMath.encodeExcludedPeriods(excludeSet, periods)
+                                } else {
+                                    ""
+                                },
+                                note = note.trim(),
+                            ),
                         ) { err ->
                             if (err == null) {
                                 EcoToast.show("已保存")
@@ -671,7 +854,7 @@ private fun InstallmentEditorSheet(
     if (confirmDelete && onDelete != null) {
         EcoConfirm(
             title = "删除分期计划",
-            body = "已入账的账单不会回滚；删除后剩余期数不再提醒。",
+            body = "已入账的账单不会回滚；删除后剩余期数不再自动入账。",
             confirmText = "删除",
             danger = true,
             onConfirm = {
@@ -695,9 +878,7 @@ private fun RecurringEditorSheet(
     initial: RecurringPlanEntity?,
     accounts: List<AccountEntity>,
     categories: List<CategoryEntity>,
-    onSave: (
-        Long, String, TxType, Long, Long, Long, RecurringFrequency, LocalDate, Boolean, String, (String?) -> Unit,
-    ) -> Unit,
+    onSave: (RecurringDraft, (String?) -> Unit) -> Unit,
     onDelete: (((String?) -> Unit) -> Unit)?,
     onClose: () -> Unit,
 ) {
@@ -708,15 +889,40 @@ private fun RecurringEditorSheet(
         mutableStateOf(initial?.let { Money.formatCents(it.amountCents) } ?: "")
     }
     var frequency by remember(initial?.id) { mutableStateOf(RecurringFrequency.of(initial?.frequency)) }
+    var intervalText by remember(initial?.id) {
+        mutableStateOf(initial?.intervalCount?.takeIf { it > 1 }?.toString() ?: "2")
+    }
     var firstDate by remember(initial?.id) {
         mutableStateOf(initial?.let { RecurringMath.dateOf(it.firstDateMillis) } ?: LocalDate.now())
+    }
+    var postTimeMinutes by remember(initial?.id) { mutableIntStateOf(initial?.postTimeMinutes ?: 540) }
+    var endMode by remember(initial?.id) { mutableStateOf(RecurringEndMode.of(initial?.endMode)) }
+    var endCountText by remember(initial?.id) {
+        mutableStateOf(initial?.endCount?.takeIf { it > 0 }?.toString() ?: "12")
+    }
+    var endDate by remember(initial?.id) {
+        mutableStateOf(
+            initial?.endDateMillis?.takeIf { it > 0L }?.let { RecurringMath.dateOf(it) }
+                ?: LocalDate.now().plusMonths(1),
+        )
     }
     var accountId by remember(initial?.id) { mutableStateOf(initial?.accountId ?: (accounts.firstOrNull()?.id ?: 0L)) }
     var categoryId by remember(initial?.id) { mutableStateOf(initial?.categoryId ?: 0L) }
     var deduct by remember(initial?.id) { mutableStateOf(initial?.deductAsset ?: true) }
+    var excludePeriodsText by remember(initial?.id) { mutableStateOf(initial?.excludeAssetPeriods ?: "") }
     var note by remember(initial?.id) { mutableStateOf(initial?.note ?: "") }
     var localError by remember(initial?.id) { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
+
+    val interval = intervalText.toIntOrNull() ?: 1
+    // 下一笔预览：还没记过就按首期，记过则沿用计划里的下一期
+    val nextPreview = initial?.let { plan ->
+        if (plan.postedCount == 0 || plan.nextDateMillis >= RecurringMath.NO_NEXT) {
+            firstDate
+        } else {
+            RecurringMath.dateOf(plan.nextDateMillis)
+        }
+    } ?: firstDate
 
     EcoSheet(onDismiss = onClose, title = if (initial == null) "新增周期" else "编辑周期") {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -739,12 +945,62 @@ private fun RecurringEditorSheet(
                 value = amountText,
                 onValueChange = { amountText = it; localError = null },
             )
+            Text("重复周期", style = EcoType.PageNote, color = c.muted)
             EcoSegmented(
                 options = RecurringFrequency.entries.map { it.label },
                 selectedIndex = frequency.ordinal,
                 onSelect = { frequency = RecurringFrequency.entries[it] },
+                small = true,
             )
+            if (frequency == RecurringFrequency.EVERY_N_DAYS) {
+                EcoField(
+                    label = "间隔天数",
+                    value = intervalText,
+                    onValueChange = { intervalText = it.filter { ch -> ch.isDigit() }.take(4); localError = null },
+                    placeholder = "2",
+                    keyboardType = KeyboardType.Number,
+                    supporting = "每 1 ~ 3650 天记一笔",
+                )
+            }
             DateDropdowns(date = firstDate, onChange = { firstDate = it })
+            Text("出账时间", style = EcoType.PageNote, color = c.muted)
+            TimeDropdowns(minutes = postTimeMinutes, onChange = { postTimeMinutes = it })
+            Text(
+                "下一笔将在「${nextPreview.monthValue} 月 ${nextPreview.dayOfMonth} 日 " +
+                    "${InstallmentMath.timeText(postTimeMinutes)}」自动生成账单；提前不入账",
+                style = EcoType.PageNote,
+                color = c.quiet,
+            )
+            Text("结束方式", style = EcoType.PageNote, color = c.muted)
+            EcoSegmented(
+                options = RecurringEndMode.entries.map { it.label },
+                selectedIndex = endMode.ordinal,
+                onSelect = { endMode = RecurringEndMode.entries[it] },
+                small = true,
+            )
+            when (endMode) {
+                RecurringEndMode.NEVER -> Unit
+                RecurringEndMode.COUNT -> EcoField(
+                    label = "共记多少次",
+                    value = endCountText,
+                    onValueChange = { endCountText = it.filter { ch -> ch.isDigit() }.take(5); localError = null },
+                    placeholder = "12",
+                    keyboardType = KeyboardType.Number,
+                    supporting = "含首次，1 ~ ${InstallmentMath.MAX_PERIOD_INDEX} 次",
+                )
+                RecurringEndMode.DATE -> {
+                    DateDropdowns(
+                        date = endDate,
+                        onChange = { endDate = it },
+                        yearLabel = "结束年份",
+                    )
+                    Text(
+                        "结束日期当天及之前仍会照常出账",
+                        style = EcoType.PageNote,
+                        color = c.quiet,
+                    )
+                }
+            }
             AccountCategoryFields(
                 accounts = accounts,
                 categories = categories,
@@ -760,6 +1016,21 @@ private fun RecurringEditorSheet(
                 onCheckedChange = { deduct = !it },
                 subtitle = "开启后入账不会改变账户余额",
             )
+            if (deduct) {
+                EcoField(
+                    label = "指定不扣资产的次数",
+                    value = excludePeriodsText,
+                    onValueChange = {
+                        excludePeriodsText = it.filter { ch ->
+                            ch.isDigit() || ch == ',' || ch == '-' || ch == '，' ||
+                                ch == '－' || ch == '~'
+                        }
+                        localError = null
+                    },
+                    placeholder = "例如 1-3,6（留空 = 每次都扣资产）",
+                    supporting = "按第几次入账计算，支持 1,3,12 或 1-3,6",
+                )
+            }
             EcoField(
                 label = "备注",
                 value = note,
@@ -774,14 +1045,51 @@ private fun RecurringEditorSheet(
                 text = "保存",
                 onClick = {
                     val amount = Money.parseCents(amountText) ?: 0L
+                    val excludeSet = InstallmentMath.parseExcludedIndexes(excludePeriodsText)
+                    val excludeInvalid = InstallmentMath.hasInvalidExcludedPeriods(
+                        excludePeriodsText, InstallmentMath.MAX_PERIOD_INDEX,
+                    )
                     when {
                         title.isBlank() -> localError = "请输入名称"
                         amount <= 0L -> localError = "请输入金额"
+                        frequency == RecurringFrequency.EVERY_N_DAYS && interval !in 1..3650 ->
+                            localError = "间隔天数需在 1~3650 之间"
                         accountId <= 0L -> localError = "请选择账户"
-                        categoryId <= 0L -> localError = "请选择分类"
+                        categoryId <= 0L -> localError = "请选择一级分类"
+                        endMode == RecurringEndMode.COUNT &&
+                            (endCountText.toIntOrNull() ?: 0) !in 1..InstallmentMath.MAX_PERIOD_INDEX ->
+                            localError = "结束次数需在 1~${InstallmentMath.MAX_PERIOD_INDEX} 之间"
+                        deduct && excludeInvalid ->
+                            localError = "不扣资产的次数格式不正确，可写 1-3,6"
                         else -> onSave(
-                            initial?.id ?: 0L, title.trim(), type, amount, categoryId, accountId,
-                            frequency, firstDate, deduct, note.trim(),
+                            RecurringDraft(
+                                id = initial?.id ?: 0L,
+                                title = title.trim(),
+                                type = type,
+                                amountCents = amount,
+                                categoryId = categoryId,
+                                accountId = accountId,
+                                frequency = frequency,
+                                intervalCount = if (frequency == RecurringFrequency.EVERY_N_DAYS) interval else 1,
+                                firstDate = firstDate,
+                                postTimeMinutes = postTimeMinutes,
+                                deductAsset = deduct,
+                                excludeAssetPeriods = if (deduct) {
+                                    InstallmentMath.encodeExcludedPeriods(
+                                        excludeSet, InstallmentMath.MAX_PERIOD_INDEX,
+                                    )
+                                } else {
+                                    ""
+                                },
+                                endMode = endMode,
+                                endCount = if (endMode == RecurringEndMode.COUNT) {
+                                    endCountText.toIntOrNull() ?: 0
+                                } else {
+                                    0
+                                },
+                                endDate = if (endMode == RecurringEndMode.DATE) endDate else null,
+                                note = note.trim(),
+                            ),
                         ) { err ->
                             if (err == null) {
                                 EcoToast.show("已保存")
@@ -811,7 +1119,7 @@ private fun RecurringEditorSheet(
     if (confirmDelete && onDelete != null) {
         EcoConfirm(
             title = "删除周期计划",
-            body = "已入账的账单不会回滚；删除后不再顺延。",
+            body = "已入账的账单不会回滚；删除后不再自动入账。",
             confirmText = "删除",
             danger = true,
             onConfirm = {

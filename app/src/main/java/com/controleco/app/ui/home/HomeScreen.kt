@@ -171,6 +171,7 @@ fun HomeScreen(
     val assetSummary by vm.assetSummary.collectAsStateWithLifecycle()
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val accountBalances by vm.accountBalances.collectAsStateWithLifecycle(initialValue = emptyList())
+    val assetCardPick by vm.assetCardPick.collectAsStateWithLifecycle()
     val monthStartDay by vm.monthStartDay.collectAsStateWithLifecycle()
     val dailyBudgetMode by vm.dailyBudgetMode.collectAsStateWithLifecycle()
     val dailyBudgetCents by vm.dailyBudgetCents.collectAsStateWithLifecycle()
@@ -372,6 +373,8 @@ fun HomeScreen(
                         asset = asset,
                         accounts = accounts,
                         balances = accountBalances,
+                        cardPick = assetCardPick,
+                        onPickCard = { groupId, accountId -> vm.setAssetCardPick(groupId, accountId) },
                     )
                 }
             }
@@ -875,6 +878,8 @@ private fun ModeSpentAndDeposit(
     asset: AssetSummary,
     accounts: List<AccountEntity>,
     balances: List<AccountBalanceRow>,
+    cardPick: Map<Long, Long>,
+    onPickCard: (groupId: Long, accountId: Long) -> Unit,
 ) {
     val c = MaterialTheme.eco
     // 资产页可下拉：本月已花 → 净资产（存款 / 负债）→ 我的资产账户余额
@@ -940,10 +945,11 @@ private fun ModeSpentAndDeposit(
         if (accounts.isEmpty()) {
             Text("还没有账户", style = EcoType.PageNote, color = c.muted)
         } else {
-            // 同一共用额度组的卡（同银行多卡共用欠款）只显示一张：流水同步、资产也只算一次
-            val visibleAccounts = remember(accounts, snapshots) {
+            // 同一共用额度组的卡（同银行多卡共用欠款）只显示一张：流水同步、资产也只算一次。
+            // 显示哪张由用户点这一行手动切换（选择记忆在设置里）。
+            val visibleAccounts = remember(accounts, snapshots, cardPick) {
                 val byId = accounts.associateBy { it.id }
-                AssetMath.visibleAccountIds(snapshots).mapNotNull { byId[it] }
+                AssetMath.visibleAccountIds(snapshots, cardPick).mapNotNull { byId[it] }
             }
             EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
                 Column(Modifier.fillMaxWidth()) {
@@ -951,7 +957,28 @@ private fun ModeSpentAndDeposit(
                         val bal = balances.firstOrNull { it.accountId == account.id }
                         val cents = (bal?.initialBalanceCents ?: account.initialBalanceCents) +
                             (displayFlows[account.id] ?: bal?.signedSumCents ?: 0L)
-                        AssetAccountRow(name = account.name, cents = cents)
+                        val groupMembers = remember(accounts, account.sharedGroupId) {
+                            if (account.sharedGroupId == 0L) {
+                                emptyList()
+                            } else {
+                                accounts.filter { it.sharedGroupId == account.sharedGroupId }
+                            }
+                        }
+                        val cycle: (() -> Unit)? = if (groupMembers.size > 1) {
+                            {
+                                val at = groupMembers.indexOfFirst { it.id == account.id }
+                                val next = groupMembers[(at + 1) % groupMembers.size]
+                                onPickCard(account.sharedGroupId, next.id)
+                            }
+                        } else {
+                            null
+                        }
+                        AssetAccountRow(
+                            name = account.name,
+                            cents = cents,
+                            sharedCount = groupMembers.size,
+                            onClick = cycle,
+                        )
                         if (index != visibleAccounts.lastIndex) {
                             Box(
                                 Modifier
@@ -992,12 +1019,28 @@ private fun AssetMini(label: String, cents: Long, color: Color, modifier: Modifi
 }
 
 @Composable
-private fun AssetAccountRow(name: String, cents: Long) {
+private fun AssetAccountRow(
+    name: String,
+    cents: Long,
+    sharedCount: Int = 0,
+    onClick: (() -> Unit)? = null,
+) {
     val c = MaterialTheme.eco
     Row(
         Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onClick,
+                    )
+                } else {
+                    Modifier
+                },
+            )
             .padding(horizontal = 15.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -1014,9 +1057,14 @@ private fun AssetAccountRow(name: String, cents: Long) {
             color = c.ink,
             maxLines = 1,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f, fill = false),
         )
-        Spacer(Modifier.width(10.dp))
+        if (sharedCount > 1 && onClick != null) {
+            Spacer(Modifier.width(6.dp))
+            EcoPill("$sharedCount 张 · 切换", EcoPillTone.Blue)
+        }
+        Spacer(Modifier.weight(1f))
+        Spacer(Modifier.width(8.dp))
         Text(
             Money.formatYuanGroupedFixed(cents),
             style = EcoType.BillAmount.copy(fontSize = 13.sp),

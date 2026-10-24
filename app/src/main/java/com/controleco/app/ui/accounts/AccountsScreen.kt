@@ -41,6 +41,7 @@ import com.controleco.app.data.db.AccountEntity
 import com.controleco.app.data.db.AccountKind
 import com.controleco.app.data.model.AssetAccountSnapshot
 import com.controleco.app.data.model.AssetMath
+import com.controleco.app.data.plan.InstallmentMath
 import com.controleco.app.data.model.AssetSummary
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.eco.EcoAutoMoney
@@ -81,6 +82,18 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val balances by vm.accountBalances.collectAsStateWithLifecycle(initialValue = emptyList())
     val asset by vm.assetSummary.collectAsStateWithLifecycle(initialValue = null)
+    val installmentPlans by vm.installmentPlans.collectAsStateWithLifecycle()
+
+    // 各账户「还未到出账时间」的分期金额：只用于展示，不计入流水与余额
+    val unpostedByAccount = remember(installmentPlans) {
+        installmentPlans.groupBy { it.accountId }.mapValues { (_, plans) ->
+            plans.sumOf { plan ->
+                InstallmentMath.unpostedTotal(
+                    plan.totalPrincipalCents, plan.totalInterestCents, plan.periods, plan.postedPeriods,
+                )
+            }
+        }
+    }
 
     val snapshots = remember(accounts, balances) {
         accounts.map { account ->
@@ -140,6 +153,7 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     balances = balances,
                     displayFlows = displayFlows,
                     allAccounts = accounts,
+                    unpostedByAccount = unpostedByAccount,
                     emptyBody = "点右上角 + 新增存款账户，余额与流水都记在账户下",
                     onOpen = { openEditor(it) },
                 )
@@ -153,6 +167,7 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     balances = balances,
                     displayFlows = displayFlows,
                     allAccounts = accounts,
+                    unpostedByAccount = unpostedByAccount,
                     emptyBody = "点右上角 + 新增信用卡；同行的卡可设为共用额度",
                     onOpen = { openEditor(it) },
                 )
@@ -160,7 +175,7 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             item(key = "note") {
                 EcoPageNote(
                     "账户余额 = 期初余额 + 全部收入 − 全部支出。修改期初余额会改变当前余额，不会改动流水；" +
-                        "账户下已有流水时无法删除。",
+                        "账户下已有流水时无法删除。「未出账分期」是尚未到出账时间的期数金额，不计入流水与余额。",
                 )
             }
         }
@@ -220,6 +235,7 @@ private fun AccountPane(
     balances: List<AccountBalanceRow>,
     displayFlows: Map<Long, Long>,
     allAccounts: List<AccountEntity>,
+    unpostedByAccount: Map<Long, Long>,
     emptyBody: String,
     onOpen: (AccountEntity) -> Unit,
 ) {
@@ -240,6 +256,7 @@ private fun AccountPane(
                         account = account,
                         initialCents = initial,
                         flowCents = flow,
+                        unpostedCents = unpostedByAccount[account.id] ?: 0L,
                         isDefault = account.isDefault,
                         sharedCount = if (account.sharedGroupId != 0L) {
                             allAccounts.count { it.sharedGroupId == account.sharedGroupId }
@@ -336,6 +353,7 @@ private fun AccountRowItem(
     account: AccountEntity,
     initialCents: Long,
     flowCents: Long,
+    unpostedCents: Long,
     isDefault: Boolean,
     sharedCount: Int,
     onClick: () -> Unit,
@@ -401,6 +419,15 @@ private fun AccountRowItem(
                 color = c.quiet,
                 maxLines = 1,
             )
+            if (unpostedCents > 0L) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    "未出账分期 ${Money.formatYuanGrouped(unpostedCents)}",
+                    style = EcoType.PageNote.copy(fontSize = 8.sp, lineHeight = 11.sp),
+                    color = c.amber,
+                    maxLines = 1,
+                )
+            }
         }
     }
 }

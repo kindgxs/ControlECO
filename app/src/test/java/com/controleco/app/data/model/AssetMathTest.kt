@@ -56,4 +56,18 @@ class AssetMathTest {
         )
         assertEquals(listOf(1L, 3L, 4L, 6L), AssetMath.visibleAccountIds(accounts))
     }
+
+    @Test
+    fun `共用额度组_可以手动选择显示哪张卡`() {
+        val accounts = listOf(
+            AssetAccountSnapshot(id = 1, sharedGroupId = 7, initialBalanceCents = 0, flowCents = -100_000),
+            AssetAccountSnapshot(id = 2, sharedGroupId = 7, initialBalanceCents = 0, flowCents = -50_000),
+            AssetAccountSnapshot(id = 3, sharedGroupId = 0, initialBalanceCents = 0, flowCents = 20_000),
+        )
+        assertEquals(listOf(2L, 3L), AssetMath.visibleAccountIds(accounts, mapOf(7L to 2L)))
+        // 指定的卡已不在组内 → 回落到组内第一张
+        assertEquals(listOf(1L, 3L), AssetMath.visibleAccountIds(accounts, mapOf(7L to 99L)))
+        // 资产汇总始终按整组计算，与显示哪张卡无关
+        assertEquals(150_000L, AssetMath.summarize(accounts).liabilityCents)
+    }
 }

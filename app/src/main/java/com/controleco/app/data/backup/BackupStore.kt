@@ -43,7 +43,7 @@ internal data class BackupData(
 object BackupStore {
 
     private const val APP_TAG = "ControlECO"
-    private const val FORMAT_VERSION = 15
+    private const val FORMAT_VERSION = 16
 
     /** 不参与导出的设置键（本地文件路径，换设备后用不了） */
     private val EXCLUDED_SETTINGS = setOf(
@@ -222,6 +222,7 @@ object BackupStore {
         put("firstDateMillis", p.firstDateMillis)
         put("deductAsset", p.deductAsset)
         put("excludeAssetPeriods", p.excludeAssetPeriods)
+        put("postTimeMinutes", p.postTimeMinutes)
         put("note", p.note)
         put("postedPeriods", p.postedPeriods)
         put("createdAt", p.createdAt)
@@ -235,10 +236,17 @@ object BackupStore {
         put("categoryId", p.categoryId)
         put("accountId", p.accountId)
         put("frequency", p.frequency)
+        put("intervalCount", p.intervalCount)
         put("firstDateMillis", p.firstDateMillis)
         put("nextDateMillis", p.nextDateMillis)
         put("deductAsset", p.deductAsset)
         put("autoPost", p.autoPost)
+        put("postTimeMinutes", p.postTimeMinutes)
+        put("endMode", p.endMode)
+        put("endCount", p.endCount)
+        put("endDateMillis", p.endDateMillis)
+        put("postedCount", p.postedCount)
+        put("excludeAssetPeriods", p.excludeAssetPeriods)
         put("note", p.note)
         put("createdAt", p.createdAt)
     }
@@ -314,6 +322,7 @@ object BackupStore {
         firstDateMillis = o.optLong("firstDateMillis"),
         deductAsset = o.optBoolean("deductAsset", true),
         excludeAssetPeriods = o.optString("excludeAssetPeriods"),
+        postTimeMinutes = o.optInt("postTimeMinutes", 540),
         note = o.optString("note"),
         postedPeriods = o.optInt("postedPeriods"),
         createdAt = o.optLong("createdAt"),
@@ -327,10 +336,17 @@ object BackupStore {
         categoryId = o.optLong("categoryId"),
         accountId = o.optLong("accountId"),
         frequency = o.optString("frequency", "MONTHLY"),
+        intervalCount = o.optInt("intervalCount", 1),
         firstDateMillis = o.optLong("firstDateMillis"),
         nextDateMillis = o.optLong("nextDateMillis"),
         deductAsset = o.optBoolean("deductAsset", true),
         autoPost = o.optBoolean("autoPost"),
+        postTimeMinutes = o.optInt("postTimeMinutes", 540),
+        endMode = o.optString("endMode", "NEVER"),
+        endCount = o.optInt("endCount"),
+        endDateMillis = o.optLong("endDateMillis"),
+        postedCount = o.optInt("postedCount"),
+        excludeAssetPeriods = o.optString("excludeAssetPeriods"),
         note = o.optString("note"),
         createdAt = o.optLong("createdAt"),
     )

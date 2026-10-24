@@ -11,6 +11,8 @@ import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionEntity
 import com.controleco.app.data.db.TxSource
 import com.controleco.app.data.db.TxType
+import com.controleco.app.data.plan.InstallmentMath
+import com.controleco.app.data.plan.RecurringMath
 import com.controleco.app.util.Money
 import org.json.JSONObject
 import java.time.Instant
@@ -124,7 +126,7 @@ object BackupCsv {
         out.marker("##installments|分期计划")
         out.row(
             "id", "title", "accountId", "categoryId", "totalPrincipalCents", "totalInterestCents",
-            "periods", "firstDate", "deductAsset", "excludeAssetPeriods", "postedPeriods", "note",
+            "periods", "firstDate", "postTime", "deductAsset", "excludeAssetPeriods", "postedPeriods", "note",
         )
         data.installments.forEach { p ->
             out.row(
@@ -132,6 +134,7 @@ object BackupCsv {
                 p.totalPrincipalCents.toString(), p.totalInterestCents.toString(),
                 p.periods.toString(),
                 Instant.ofEpochMilli(p.firstDateMillis).atZone(zone).toLocalDate().toString(),
+                InstallmentMath.timeText(p.postTimeMinutes),
                 if (p.deductAsset) "1" else "0",
                 p.excludeAssetPeriods,
                 p.postedPeriods.toString(),
@@ -142,16 +145,32 @@ object BackupCsv {
         out.marker("##recurring|周期计划")
         out.row(
             "id", "title", "type", "amountCents", "categoryId", "accountId", "frequency",
-            "firstDate", "nextDate", "deductAsset", "autoPost", "note",
+            "intervalCount", "firstDate", "nextDate", "postTime", "deductAsset", "autoPost",
+            "endMode", "endCount", "endDate", "postedCount", "excludeAssetPeriods", "note",
         )
         data.recurring.forEach { p ->
             out.row(
                 p.id.toString(), p.title, p.type.name, p.amountCents.toString(),
                 p.categoryId.toString(), p.accountId.toString(), p.frequency,
+                p.intervalCount.toString(),
                 Instant.ofEpochMilli(p.firstDateMillis).atZone(zone).toLocalDate().toString(),
-                Instant.ofEpochMilli(p.nextDateMillis).atZone(zone).toLocalDate().toString(),
+                if (p.nextDateMillis >= RecurringMath.NO_NEXT) {
+                    ""
+                } else {
+                    Instant.ofEpochMilli(p.nextDateMillis).atZone(zone).toLocalDate().toString()
+                },
+                InstallmentMath.timeText(p.postTimeMinutes),
                 if (p.deductAsset) "1" else "0",
                 if (p.autoPost) "1" else "0",
+                p.endMode,
+                p.endCount.toString(),
+                if (p.endDateMillis > 0L) {
+                    Instant.ofEpochMilli(p.endDateMillis).atZone(zone).toLocalDate().toString()
+                } else {
+                    ""
+                },
+                p.postedCount.toString(),
+                p.excludeAssetPeriods,
                 p.note,
             )
         }
@@ -365,6 +384,7 @@ object BackupCsv {
                     firstDateMillis = parseTimestamp(sec.cell(row, "firstDate"), zone) ?: return@mapNotNull null,
                     deductAsset = boolOf(sec.cell(row, "deductAsset"), fallback = true),
                     excludeAssetPeriods = sec.cell(row, "excludeAssetPeriods"),
+                    postTimeMinutes = parseMinutes(sec.cell(row, "postTime")) ?: 540,
                     postedPeriods = sec.cell(row, "postedPeriods").toIntOrNull() ?: 0,
                     note = sec.cell(row, "note"),
                 )
@@ -379,6 +399,12 @@ object BackupCsv {
                 val categoryId = sec.cell(row, "categoryId").toLongOrNull() ?: return@mapNotNull null
                 val first = parseTimestamp(sec.cell(row, "firstDate"), zone) ?: return@mapNotNull null
                 val rawId = sec.cell(row, "id").toLongOrNull() ?: 0L
+                val nextText = sec.cell(row, "nextDate").trim()
+                val next = if (nextText.isEmpty()) {
+                    RecurringMath.NO_NEXT
+                } else {
+                    parseTimestamp(nextText, zone) ?: first
+                }
                 RecurringPlanEntity(
                     id = if (rawId > 0 && usedRecurringIds.add(rawId)) rawId else 0L,
                     title = sec.cell(row, "title"),
@@ -387,10 +413,17 @@ object BackupCsv {
                     categoryId = categoryIdMap[categoryId] ?: categoryId,
                     accountId = accountIdMap[accountId] ?: accountId,
                     frequency = sec.cell(row, "frequency").ifBlank { "MONTHLY" },
+                    intervalCount = sec.cell(row, "intervalCount").toIntOrNull()?.coerceIn(1, 3650) ?: 1,
                     firstDateMillis = first,
-                    nextDateMillis = parseTimestamp(sec.cell(row, "nextDate"), zone) ?: first,
+                    nextDateMillis = next,
                     deductAsset = boolOf(sec.cell(row, "deductAsset"), fallback = true),
                     autoPost = boolOf(sec.cell(row, "autoPost")),
+                    postTimeMinutes = parseMinutes(sec.cell(row, "postTime")) ?: 540,
+                    endMode = sec.cell(row, "endMode").ifBlank { "NEVER" },
+                    endCount = sec.cell(row, "endCount").toIntOrNull() ?: 0,
+                    endDateMillis = parseTimestamp(sec.cell(row, "endDate"), zone) ?: 0L,
+                    postedCount = sec.cell(row, "postedCount").toIntOrNull() ?: 0,
+                    excludeAssetPeriods = sec.cell(row, "excludeAssetPeriods"),
                     note = sec.cell(row, "note"),
                 )
             }
@@ -603,6 +636,19 @@ object BackupCsv {
         val cleaned = text.filter { it.isDigit() || it == '.' || it == '-' || it == ',' }
         if (cleaned.isEmpty()) return null
         return Money.parseCents(cleaned)?.let { kotlin.math.abs(it) }
+    }
+
+    /** "HH:mm" 或分钟数 → 当天分钟数（0..1439）；无法解析返回 null */
+    private fun parseMinutes(text: String): Int? {
+        val value = text.trim()
+        if (value.isEmpty()) return null
+        if (!value.contains(':')) return value.toIntOrNull()?.takeIf { it in 0..1439 }
+        val parts = value.split(':')
+        if (parts.size < 2) return null
+        val hour = parts[0].trim().toIntOrNull() ?: return null
+        val minute = parts[1].trim().toIntOrNull() ?: return null
+        if (hour !in 0..23 || minute !in 0..59) return null
+        return hour * 60 + minute
     }
 
     private fun parseTimestamp(text: String, zone: ZoneId): Long? {

@@ -58,11 +58,26 @@ object AssetMath {
             members.map { it.id to flow }
         }.toMap()
 
-    /** 账户列表要展示哪些卡：共用额度组只留第一张（组内余额已经只算一次） */
-    fun visibleAccountIds(accounts: List<AssetAccountSnapshot>): List<Long> {
-        val seenGroups = HashSet<Long>()
+    /**
+     * 账户列表要展示哪些卡：共用额度组只留一张。
+     *
+     * [selected] 是用户手动指定的「首页显示哪张卡」（组 id → 账户 id）；
+     * 没指定或指定的卡已不在组内时回落到组内第一张。
+     */
+    fun visibleAccountIds(
+        accounts: List<AssetAccountSnapshot>,
+        selected: Map<Long, Long> = emptyMap(),
+    ): List<Long> {
+        val pickByGroup = HashMap<Long, Long>()
+        accounts.groupBy { it.sharedGroupId }
+            .forEach { (groupId, members) ->
+                if (groupId == 0L) return@forEach
+                val chosen = selected[groupId]
+                pickByGroup[groupId] =
+                    if (chosen != null && members.any { it.id == chosen }) chosen else members.first().id
+            }
         return accounts
-            .filter { it.sharedGroupId == 0L || seenGroups.add(it.sharedGroupId) }
+            .filter { it.sharedGroupId == 0L || it.id == pickByGroup[it.sharedGroupId] }
             .map { it.id }
     }
 

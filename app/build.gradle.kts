@@ -14,8 +14,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // 每次带修改的构建把第三位 +1；1.0.0 起为正式版本，版本名不再带 -beta 后缀
-        versionCode = 36
-        versionName = "1.0.1"
+        versionCode = 37
+        versionName = "1.0.2"
     }
 
     buildTypes {

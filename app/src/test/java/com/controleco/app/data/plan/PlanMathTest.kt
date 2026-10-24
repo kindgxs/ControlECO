@@ -150,4 +150,93 @@ class PlanMathTest {
         assertTrue(InstallmentMath.excludesAsset(true, "2,4", 12, 4))
         assertFalse(InstallmentMath.excludesAsset(true, "2,4", 12, 3))
     }
+
+    @Test
+    fun `周期记账_每年与每N天`() {
+        assertEquals(
+            LocalDate.of(2027, 10, 24),
+            RecurringMath.next(LocalDate.of(2026, 10, 24), RecurringFrequency.YEARLY),
+        )
+        // 2/29 的每年顺延落到非闰年的 2/28
+        assertEquals(
+            LocalDate.of(2025, 2, 28),
+            RecurringMath.next(LocalDate.of(2024, 2, 29), RecurringFrequency.YEARLY),
+        )
+        assertEquals(
+            LocalDate.of(2026, 10, 27),
+            RecurringMath.next(LocalDate.of(2026, 10, 24), RecurringFrequency.EVERY_N_DAYS, interval = 3),
+        )
+        // 间隔非法时按 1 天处理
+        assertEquals(
+            LocalDate.of(2026, 10, 25),
+            RecurringMath.next(LocalDate.of(2026, 10, 24), RecurringFrequency.EVERY_N_DAYS, interval = 0),
+        )
+        assertEquals("每 3 天", RecurringMath.describe(RecurringFrequency.EVERY_N_DAYS, 3))
+        assertEquals("每月", RecurringMath.describe(RecurringFrequency.MONTHLY, 5))
+    }
+
+    @Test
+    fun `周期记账_结束方式判断`() {
+        val next = LocalDate.of(2026, 11, 12)
+        assertFalse(
+            RecurringMath.endedAfter(RecurringEndMode.NEVER, 0, 0L, 100, next),
+        )
+        // 按次数：已记满结束
+        assertTrue(RecurringMath.endedAfter(RecurringEndMode.COUNT, 3, 0L, 3, next))
+        assertFalse(RecurringMath.endedAfter(RecurringEndMode.COUNT, 3, 0L, 2, next))
+        // 次数非法（0）时不结束
+        assertFalse(RecurringMath.endedAfter(RecurringEndMode.COUNT, 0, 0L, 100, next))
+        // 按日期：下一次已超过结束日
+        val endMillis = LocalDate.of(2026, 10, 31)
+            .atStartOfDay(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli()
+        assertTrue(RecurringMath.endedAfter(RecurringEndMode.DATE, 0, endMillis, 5, next))
+        assertFalse(
+            RecurringMath.endedAfter(
+                RecurringEndMode.DATE, 0, endMillis, 5, LocalDate.of(2026, 10, 31),
+            ),
+        )
+        // 未设置结束日期不结束
+        assertFalse(RecurringMath.endedAfter(RecurringEndMode.DATE, 0, 0L, 5, next))
+    }
+
+    @Test
+    fun `出账时间与分钟换算`() {
+        assertEquals(540, 9 * 60)
+        assertEquals("09:00", InstallmentMath.timeText(540))
+        assertEquals("00:00", InstallmentMath.timeText(-10))
+        assertEquals("23:59", InstallmentMath.timeText(10_000))
+        assertEquals("12:05", InstallmentMath.timeText(12 * 60 + 5))
+    }
+
+    @Test
+    fun `未出账分期金额_不含已出账期数`() {
+        // 1200 元分 3 期，无利息：已记 1 期 → 剩余 2 期 = 800 元
+        assertEquals(80_000L, InstallmentMath.unpostedTotal(120_000L, 0L, 3, 1))
+        assertEquals(120_000L, InstallmentMath.unpostedTotal(120_000L, 0L, 3, 0))
+        assertEquals(0L, InstallmentMath.unpostedTotal(120_000L, 0L, 3, 3))
+        assertEquals(0L, InstallmentMath.unpostedTotal(120_000L, 0L, 0, 0))
+        // 含利息：总还款 = 本金 + 利息
+        assertEquals(
+            InstallmentMath.totalRepayment(120_000L, 43_200L),
+            InstallmentMath.unpostedTotal(120_000L, 43_200L, 6, 0),
+        )
+    }
+
+    @Test
+    fun `周期记账不扣资产序号解析`() {
+        assertEquals(setOf(1, 2, 3, 6), InstallmentMath.parseExcludedIndexes("1-3,6"))
+        assertTrue(InstallmentMath.excludesAssetAt(true, "2", 2))
+        assertFalse(InstallmentMath.excludesAssetAt(true, "2", 3))
+        assertTrue(InstallmentMath.excludesAssetAt(false, "", 9999))
+        // 超过上限的序号忽略
+        assertEquals(emptySet<Int>(), InstallmentMath.parseExcludedIndexes("10001"))
+    }
+
+    @Test
+    fun `结束方式解析_未知值回落永不结束`() {
+        assertEquals(RecurringEndMode.NEVER, RecurringEndMode.of(null))
+        assertEquals(RecurringEndMode.NEVER, RecurringEndMode.of("WHATEVER"))
+        assertEquals(RecurringEndMode.COUNT, RecurringEndMode.of("COUNT"))
+        assertEquals(RecurringEndMode.DATE, RecurringEndMode.of("DATE"))
+    }
 }

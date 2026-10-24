@@ -14,11 +14,26 @@ enum class RecurringFrequency(val label: String) {
     DAILY("每天"),
     WEEKLY("每周"),
     MONTHLY("每月"),
+    YEARLY("每年"),
+    EVERY_N_DAYS("每N天"),
     ;
 
     companion object {
         fun of(value: String?): RecurringFrequency =
             entries.firstOrNull { it.name == value } ?: MONTHLY
+    }
+}
+
+/** 周期记账的结束方式 */
+enum class RecurringEndMode(val label: String) {
+    NEVER("永不结束"),
+    COUNT("按次数结束"),
+    DATE("按日期结束"),
+    ;
+
+    companion object {
+        fun of(value: String?): RecurringEndMode =
+            entries.firstOrNull { it.name == value } ?: NEVER
     }
 }
 
@@ -80,6 +95,38 @@ object InstallmentMath {
     /** 分期总还款额 */
     fun totalRepayment(totalPrincipalCents: Long, totalInterestCents: Long): Long =
         totalPrincipalCents.coerceAtLeast(0L) + totalInterestCents.coerceAtLeast(0L)
+
+    /** 第 index 期的出账时间戳：计划日期 + 当天出账时间 */
+    fun periodMillis(
+        firstDate: LocalDate,
+        index: Int,
+        postTimeMinutes: Int,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): Long = RecurringMath.millisAt(periodDate(firstDate, index), zone, timeOf(postTimeMinutes))
+
+    /** 尚未出账的期数合计（未出账分期金额；不计入账户流水） */
+    fun unpostedTotal(
+        totalPrincipalCents: Long,
+        totalInterestCents: Long,
+        periods: Int,
+        postedPeriods: Int,
+    ): Long {
+        if (periods <= 0 || postedPeriods >= periods) return 0L
+        var sum = 0L
+        for (index in (postedPeriods + 1)..periods) {
+            sum += periodTotal(totalPrincipalCents, totalInterestCents, periods, index)
+        }
+        return sum
+    }
+
+    /** 分钟数 → 当天时间（0..1439，越界自动夹取） */
+    fun timeOf(minutes: Int): LocalTime {
+        val m = minutes.coerceIn(0, 24 * 60 - 1)
+        return LocalTime.of(m / 60, m % 60)
+    }
+
+    /** 分钟数 → "HH:mm" */
+    fun timeText(minutes: Int): String = timeOf(minutes).let { "%02d:%02d".format(it.hour, it.minute) }
 
     /**
      * 当前处于第几期（1 起）：按首期日期和今天自动推算，不依赖手动记录的期数。
@@ -179,28 +226,55 @@ object InstallmentMath {
     /** 该期是否「只记账、不扣资产」：整体开关关闭，或该期被单独指定 */
     fun excludesAsset(deductAsset: Boolean, excludePeriodsText: String?, periods: Int, index: Int): Boolean =
         !deductAsset || index in parseExcludedPeriods(excludePeriodsText, periods)
+
+    /** 周期记账没有固定总次数：不扣资产序号按一个足够大的上限解析（1..10000） */
+    fun parseExcludedIndexes(text: String?): Set<Int> =
+        parseExcludedPeriods(text, MAX_PERIOD_INDEX)
+
+    /** 周期记账第 index 次是否只记账、不扣资产 */
+    fun excludesAssetAt(deductAsset: Boolean, excludePeriodsText: String?, index: Int): Boolean =
+        !deductAsset || index in parseExcludedIndexes(excludePeriodsText)
+
+    const val MAX_PERIOD_INDEX = 10_000
 }
 
 /** 周期记账的下一次日期（纯函数，可单测） */
 object RecurringMath {
 
-    fun next(from: LocalDate, frequency: RecurringFrequency): LocalDate = when (frequency) {
+    /** nextDateMillis 的「已结束」哨兵值：排到列表最后，且永远不会到期 */
+    const val NO_NEXT: Long = Long.MAX_VALUE
+
+    fun next(
+        from: LocalDate,
+        frequency: RecurringFrequency,
+        interval: Int = 1,
+    ): LocalDate = when (frequency) {
         RecurringFrequency.DAILY -> from.plusDays(1)
         RecurringFrequency.WEEKLY -> from.plusWeeks(1)
         RecurringFrequency.MONTHLY -> {
             val target = YearMonth.from(from).plusMonths(1)
             target.atDay(from.dayOfMonth.coerceAtMost(target.lengthOfMonth()))
         }
+        RecurringFrequency.YEARLY -> {
+            val target = YearMonth.from(from).plusYears(1)
+            target.atDay(from.dayOfMonth.coerceAtMost(target.lengthOfMonth()))
+        }
+        RecurringFrequency.EVERY_N_DAYS -> from.plusDays(interval.coerceAtLeast(1).toLong())
     }
 
     /**
      * 从 [from] 往前推进 [count] 个周期后的日期（count 可能很大，直接循环有上限保护）。
      */
-    fun advance(from: LocalDate, frequency: RecurringFrequency, count: Long): LocalDate {
+    fun advance(
+        from: LocalDate,
+        frequency: RecurringFrequency,
+        count: Long,
+        interval: Int = 1,
+    ): LocalDate {
         var d = from
         var left = count.coerceIn(0L, 5_000L)
         while (left > 0) {
-            d = next(d, frequency)
+            d = next(d, frequency, interval)
             left--
         }
         return d
@@ -210,12 +284,48 @@ object RecurringMath {
     fun millisAt(date: LocalDate, zone: ZoneId = ZoneId.systemDefault(), time: LocalTime = LocalTime.of(9, 0)): Long =
         LocalDateTime.of(date, time).atZone(zone).toInstant().toEpochMilli()
 
+    /** 分钟数（0..1439）→ 当天时间戳 */
+    fun millisAtMinutes(
+        date: LocalDate,
+        postTimeMinutes: Int,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): Long = millisAt(date, zone, InstallmentMath.timeOf(postTimeMinutes))
+
     fun dateOf(millis: Long, zone: ZoneId = ZoneId.systemDefault()): LocalDate =
         Instant.ofEpochMilli(millis).atZone(zone).toLocalDate()
 
     /** 还差多少天到期（负数 = 已过期） */
     fun daysUntil(nextMillis: Long, today: LocalDate, zone: ZoneId = ZoneId.systemDefault()): Long =
         ChronoUnit.DAYS.between(today, dateOf(nextMillis, zone))
+
+    /** 频率 + 间隔的文字说明（例：每 3 天 / 每月） */
+    fun describe(frequency: RecurringFrequency, interval: Int): String =
+        if (frequency == RecurringFrequency.EVERY_N_DAYS) {
+            "每 ${interval.coerceAtLeast(1)} 天"
+        } else {
+            frequency.label
+        }
+
+    /** 这一次入账后是否到达结束条件（按次数 / 按日期） */
+    fun endedAfter(
+        mode: RecurringEndMode,
+        endCount: Int,
+        endDateMillis: Long,
+        postedTotal: Int,
+        nextDate: LocalDate,
+        zone: ZoneId = ZoneId.systemDefault(),
+    ): Boolean = when (mode) {
+        RecurringEndMode.NEVER -> false
+        RecurringEndMode.COUNT -> endCount in 1..Int.MAX_VALUE && postedTotal >= endCount
+        RecurringEndMode.DATE -> {
+            if (endDateMillis <= 0L) {
+                false
+            } else {
+                val endDate = dateOf(endDateMillis, zone)
+                nextDate.isAfter(endDate)
+            }
+        }
+    }
 }
 
 /** 分期 / 周期的入账方向：一律记为支出（信用卡分期与固定支出场景） */
