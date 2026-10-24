@@ -26,7 +26,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
+import com.controleco.app.data.budget.Budget
 import com.controleco.app.data.budget.MonthBudgetPlan
+import com.controleco.app.data.budget.MonthPeriod
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.eco.EcoEmpty
@@ -57,6 +59,8 @@ fun MonthBudgetScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val plans by vm.budgetPlans.collectAsStateWithLifecycle()
     val categories by vm.categories.collectAsStateWithLifecycle()
     val globalMonthly by vm.globalMonthlyBudgetCents.collectAsStateWithLifecycle()
+    val dailyMode by vm.dailyBudgetMode.collectAsStateWithLifecycle()
+    val monthStartDay by vm.monthStartDay.collectAsStateWithLifecycle()
 
     val today = remember { LocalDate.now() }
     var month by remember { mutableStateOf(YearMonth.from(today)) }
@@ -99,6 +103,9 @@ fun MonthBudgetScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 plan = plan,
                 expenseTop = expenseTop.map { it.id to it.name },
                 globalFallbackCents = globalFallback,
+                globalMonthlyCents = globalMonthly,
+                dailyMode = dailyMode,
+                days = MonthPeriod.of(today, monthStartDay).days,
             )
         }
     }
@@ -111,8 +118,14 @@ private fun MonthBudgetForm(
     plan: MonthBudgetPlan?,
     expenseTop: List<Pair<Long, String>>,
     globalFallbackCents: Long,
+    globalMonthlyCents: Long,
+    dailyMode: Boolean,
+    days: Int,
 ) {
     var totalText by remember { mutableStateOf(plan?.totalCents?.takeIf { it > 0L }?.let { Money.formatCents(it) } ?: "") }
+    var globalText by remember {
+        mutableStateOf(globalMonthlyCents.takeIf { it > 0L }?.let { Money.formatCents(it) } ?: "")
+    }
     val categoryTexts = remember { mutableStateMapOf<Long, String>() }
     expenseTop.forEach { (id, _) ->
         if (!categoryTexts.containsKey(id)) {
@@ -125,6 +138,38 @@ private fun MonthBudgetForm(
         contentPadding = PaddingValues(start = 22.dp, end = 22.dp, top = 6.dp, bottom = ecoBottomContentPadding()),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        item(key = "global") {
+            EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
+                Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    EcoMoneyField(
+                        label = "全局月预算",
+                        value = globalText,
+                        onValueChange = { globalText = it },
+                        supporting = if (dailyMode) {
+                            "日预算按本期 $days 天自动计算：约 " +
+                                Money.formatYuanGroupedFixed(Budget.dailyEquivalent(globalMonthlyCents, days)) + " / 天"
+                        } else {
+                            "未单独设置的月份都沿用此金额"
+                        },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    EcoGhostButton(
+                        text = "保存全局预算",
+                        onClick = {
+                            val cents = globalText.takeIf { it.isNotBlank() }?.let { Money.parseCents(it) }
+                            if (cents == null && globalText.isNotBlank()) {
+                                EcoToast.show("全局预算格式不正确", EcoPillTone.Bad)
+                                return@EcoGhostButton
+                            }
+                            vm.setMonthlyBudget(cents ?: 0L)
+                            EcoToast.show("已保存全局预算")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+
         item(key = "total") {
             EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
                 Column(Modifier.fillMaxWidth().padding(16.dp)) {

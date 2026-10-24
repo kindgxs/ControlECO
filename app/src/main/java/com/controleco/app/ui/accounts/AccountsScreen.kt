@@ -36,7 +36,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
+import com.controleco.app.data.db.AccountBalanceRow
 import com.controleco.app.data.db.AccountEntity
+import com.controleco.app.data.db.AccountKind
+import com.controleco.app.data.model.AssetAccountSnapshot
+import com.controleco.app.data.model.AssetMath
 import com.controleco.app.data.model.AssetSummary
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.eco.EcoAutoMoney
@@ -55,6 +59,7 @@ import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoRow
 import com.controleco.app.ui.eco.EcoRowDivider
 import com.controleco.app.ui.eco.EcoSectionHead
+import com.controleco.app.ui.eco.EcoSegmented
 import com.controleco.app.ui.eco.EcoSheet
 import com.controleco.app.ui.eco.EcoSwitchRow
 import com.controleco.app.ui.eco.EcoTopBar
@@ -76,6 +81,22 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val accounts by vm.accounts.collectAsStateWithLifecycle()
     val balances by vm.accountBalances.collectAsStateWithLifecycle(initialValue = emptyList())
     val asset by vm.assetSummary.collectAsStateWithLifecycle(initialValue = null)
+
+    val snapshots = remember(accounts, balances) {
+        accounts.map { account ->
+            val row = balances.firstOrNull { it.accountId == account.id }
+            AssetAccountSnapshot(
+                id = account.id,
+                sharedGroupId = account.sharedGroupId,
+                initialBalanceCents = row?.initialBalanceCents ?: account.initialBalanceCents,
+                flowCents = row?.signedSumCents ?: 0L,
+            )
+        }
+    }
+    // 共用额度组内的卡：流水合并展示（扣卡 1 时卡 2 同步），资产只算一次
+    val displayFlows = remember(snapshots) { AssetMath.displayedFlows(snapshots) }
+    val cashAccounts = remember(accounts) { accounts.filter { it.kind == AccountKind.CASH } }
+    val creditAccounts = remember(accounts) { accounts.filter { it.kind == AccountKind.CREDIT } }
 
     var showEditor by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<AccountEntity?>(null) }
@@ -110,38 +131,31 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 Spacer(Modifier.height(8.dp))
                 AssetsTotalCard(asset = asset, accountCount = accounts.size)
             }
-            item(key = "head") {
-                EcoSectionHead(title = "账户", aside = "ACCOUNTS")
+            item(key = "headCash") {
+                EcoSectionHead(title = "存款", aside = "CASH")
             }
-            item(key = "list") {
-                EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
-                    if (accounts.isEmpty()) {
-                        EcoEmpty(
-                            title = "暂无账户",
-                            body = "点右上角 + 新增一个账户，余额与流水都记在账户下",
-                            icon = EcoIcons.Wallet,
-                        )
-                    } else {
-                        Column {
-                            accounts.forEachIndexed { index, account ->
-                                val bal = balances.firstOrNull { it.accountId == account.id }
-                                val initial = bal?.initialBalanceCents ?: account.initialBalanceCents
-                                val flow = bal?.signedSumCents ?: 0L
-                                AccountRowItem(
-                                    account = account,
-                                    initialCents = initial,
-                                    flowCents = flow,
-                                    isDefault = account.isDefault,
-                                    sharedCount = accounts.count {
-                                        account.sharedGroupId != 0L && it.sharedGroupId == account.sharedGroupId
-                                    },
-                                    onClick = { openEditor(account) },
-                                )
-                                if (index != accounts.lastIndex) EcoRowDivider(inset = 15.dp)
-                            }
-                        }
-                    }
-                }
+            item(key = "cashList") {
+                AccountPane(
+                    accounts = cashAccounts,
+                    balances = balances,
+                    displayFlows = displayFlows,
+                    allAccounts = accounts,
+                    emptyBody = "点右上角 + 新增存款账户，余额与流水都记在账户下",
+                    onOpen = { openEditor(it) },
+                )
+            }
+            item(key = "headCredit") {
+                EcoSectionHead(title = "信用卡", aside = "CREDIT")
+            }
+            item(key = "creditList") {
+                AccountPane(
+                    accounts = creditAccounts,
+                    balances = balances,
+                    displayFlows = displayFlows,
+                    allAccounts = accounts,
+                    emptyBody = "点右上角 + 新增信用卡；同行的卡可设为共用额度",
+                    onOpen = { openEditor(it) },
+                )
             }
             item(key = "note") {
                 EcoPageNote(
@@ -178,8 +192,12 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             onMakeDefault = {
                 editingNow?.let { vm.setDefaultAccount(it.id) }
             },
-            onSave = { id, name, cents, note, creditLimitCents, isDefault, shareWith ->
-                vm.saveAccount(id, name, cents, note, creditLimitCents, 0L, isDefault) { err ->
+            onSave = { id, name, kind, cents, note, creditLimitCents, isDefault, shareWith ->
+                vm.saveAccount(
+                    id = id, name = name, initialBalanceCents = cents, note = note,
+                    creditLimitCents = creditLimitCents, sharedGroupId = 0L,
+                    isDefault = isDefault, kind = kind,
+                ) { err ->
                     if (err == null) {
                         if (shareWith != null && id > 0L) vm.setSharedCreditGroup(id, shareWith)
                         sheetError = null
@@ -192,6 +210,48 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             onDelete = deleteAction,
             onClose = { showEditor = false },
         )
+    }
+}
+
+/** 一组账户（存款 / 信用卡）：列表 pane + 空态 */
+@Composable
+private fun AccountPane(
+    accounts: List<AccountEntity>,
+    balances: List<AccountBalanceRow>,
+    displayFlows: Map<Long, Long>,
+    allAccounts: List<AccountEntity>,
+    emptyBody: String,
+    onOpen: (AccountEntity) -> Unit,
+) {
+    EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
+        if (accounts.isEmpty()) {
+            EcoEmpty(
+                title = "暂无账户",
+                body = emptyBody,
+                icon = EcoIcons.Wallet,
+            )
+        } else {
+            Column {
+                accounts.forEachIndexed { index, account ->
+                    val bal = balances.firstOrNull { it.accountId == account.id }
+                    val initial = bal?.initialBalanceCents ?: account.initialBalanceCents
+                    val flow = displayFlows[account.id] ?: bal?.signedSumCents ?: 0L
+                    AccountRowItem(
+                        account = account,
+                        initialCents = initial,
+                        flowCents = flow,
+                        isDefault = account.isDefault,
+                        sharedCount = if (account.sharedGroupId != 0L) {
+                            allAccounts.count { it.sharedGroupId == account.sharedGroupId }
+                        } else {
+                            0
+                        },
+                        onClick = { onOpen(account) },
+                    )
+                    if (index != accounts.lastIndex) EcoRowDivider(inset = 15.dp)
+                }
+            }
+        }
     }
 }
 
@@ -376,12 +436,13 @@ private fun AccountEditorSheet(
     currentBalanceCents: Long?,
     error: String?,
     onMakeDefault: () -> Unit,
-    onSave: (Long, String, Long, String, Long, Boolean, Long?) -> Unit,
+    onSave: (Long, String, AccountKind, Long, String, Long, Boolean, Long?) -> Unit,
     onDelete: (() -> Unit)?,
     onClose: () -> Unit,
 ) {
     val c = MaterialTheme.eco
     var name by remember(initial?.id) { mutableStateOf(initial?.name ?: "") }
+    var kind by remember(initial?.id) { mutableStateOf(initial?.kind ?: AccountKind.CASH) }
     var balanceText by remember(initial?.id) {
         mutableStateOf(initial?.let { Money.formatCents(it.initialBalanceCents) } ?: "")
     }
@@ -456,13 +517,27 @@ private fun AccountEditorSheet(
                 supporting = "可留空 = 0；修改期初余额会改变当前余额，不会改动流水。",
             )
 
-            EcoMoneyField(
-                label = "信用额度",
-                value = creditText,
-                onValueChange = { creditText = it },
-                placeholder = "信用卡可填，0 或留空 = 不设额度",
-                supporting = "共用额度的卡会取组内最大值作为统一额度。",
+            EcoSegmented(
+                options = AccountKind.entries.map { it.label },
+                selectedIndex = if (kind == AccountKind.CASH) 0 else 1,
+                onSelect = { index ->
+                    kind = AccountKind.entries[index]
+                    if (kind == AccountKind.CASH) {
+                        creditText = ""
+                        sharedWith = 0L
+                    }
+                },
             )
+
+            if (kind == AccountKind.CREDIT) {
+                EcoMoneyField(
+                    label = "信用额度",
+                    value = creditText,
+                    onValueChange = { creditText = it },
+                    placeholder = "信用卡可填，0 或留空 = 不设额度",
+                    supporting = "共用额度的卡会取组内最大值作为统一额度。",
+                )
+            }
 
             EcoSwitchRow(
                 title = "设为默认账户",
@@ -483,7 +558,9 @@ private fun AccountEditorSheet(
             )
 
             // 同行多卡共用欠款额度：把两张卡绑定到同一组
-            if (initial != null && accounts.any { it.id != initial.id }) {
+            if (kind == AccountKind.CREDIT && initial != null &&
+                accounts.any { it.kind == AccountKind.CREDIT && it.id != initial.id }
+            ) {
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     Text("共用欠款额度", style = EcoType.FieldLabel, color = c.muted)
                     EcoRow(
@@ -494,7 +571,7 @@ private fun AccountEditorSheet(
                         onClick = { sharedWith = 0L },
                         minHeight = 46.dp,
                     )
-                    accounts.filter { it.id != initial.id }.forEach { other ->
+                    accounts.filter { it.kind == AccountKind.CREDIT && it.id != initial.id }.forEach { other ->
                         EcoRow(
                             title = other.name,
                             subtitle = "额度 ${Money.formatYuanGrouped(other.creditLimitCents)}",
@@ -525,11 +602,12 @@ private fun AccountEditorSheet(
                         else -> onSave(
                             initial?.id ?: 0L,
                             trimmed,
+                            kind,
                             cents,
                             note.trim(),
                             credit,
                             makeDefault,
-                            if (sharedWith != 0L) sharedWith else null,
+                            if (kind == AccountKind.CREDIT && sharedWith != 0L) sharedWith else null,
                         )
                     }
                 },

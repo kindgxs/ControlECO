@@ -80,6 +80,38 @@ object InstallmentMath {
     /** 分期总还款额 */
     fun totalRepayment(totalPrincipalCents: Long, totalInterestCents: Long): Long =
         totalPrincipalCents.coerceAtLeast(0L) + totalInterestCents.coerceAtLeast(0L)
+
+    /**
+     * 当前处于第几期（1 起）：按首期日期和今天自动推算，不依赖手动记录的期数。
+     *
+     * 首期还没到 → 第 1 期（等首期入账）；之后每过一个「还款日」前进一期，
+     * 停在总期数上。短月（29/30/31 日）按 [periodDate] 的月末规则比较。
+     */
+    fun currentPeriod(firstDate: LocalDate, today: LocalDate, periods: Int): Int {
+        if (periods <= 0) return 1
+        var index = 1
+        while (index < periods && !today.isBefore(periodDate(firstDate, index + 1))) {
+            index++
+        }
+        return index
+    }
+
+    /** 解析「不扣资产的期数」文本（"1,3,12"）：非法/越界项直接忽略 */
+    fun parseExcludedPeriods(text: String?, periods: Int): Set<Int> {
+        if (text.isNullOrBlank() || periods <= 0) return emptySet()
+        return text.split(',')
+            .mapNotNull { it.trim().toIntOrNull() }
+            .filter { it in 1..periods }
+            .toSet()
+    }
+
+    /** 把期数集合编码成存储文本（升序、逗号分隔） */
+    fun encodeExcludedPeriods(periodsSet: Set<Int>, periods: Int): String =
+        periodsSet.filter { it in 1..periods }.sorted().joinToString(",")
+
+    /** 该期是否「只记账、不扣资产」：整体开关关闭，或该期被单独指定 */
+    fun excludesAsset(deductAsset: Boolean, excludePeriodsText: String?, periods: Int, index: Int): Boolean =
+        !deductAsset || index in parseExcludedPeriods(excludePeriodsText, periods)
 }
 
 /** 周期记账的下一次日期（纯函数，可单测） */

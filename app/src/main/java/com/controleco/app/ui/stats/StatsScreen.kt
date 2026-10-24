@@ -57,6 +57,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.PeriodMode
+import com.controleco.app.data.SubcategoryRollupMode
 import com.controleco.app.data.budget.MonthPeriod
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.CategorySumRow
@@ -312,6 +313,36 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
                         aside = "BUDGET / ACTUAL",
                         modifier = Modifier.padding(horizontal = 22.dp),
                     )
+                    // 二级分类统计口径（设置页已移到这里）：按一级分类 / 同名合并
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 22.dp, end = 22.dp, bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "二级分类口径",
+                            style = EcoType.PageNote,
+                            color = c.quiet,
+                            modifier = Modifier.weight(1f),
+                        )
+                        EcoSegmented(
+                            options = listOf(
+                                SubcategoryRollupMode.BY_PARENT.label,
+                                SubcategoryRollupMode.MERGE_SAME_NAME.label,
+                            ),
+                            selectedIndex = if (rollupMode == SubcategoryRollupMode.BY_PARENT) 0 else 1,
+                            onSelect = {
+                                vm.setSubcategoryRollupMode(
+                                    if (it == 0) SubcategoryRollupMode.BY_PARENT
+                                    else SubcategoryRollupMode.MERGE_SAME_NAME,
+                                )
+                            },
+                            modifier = Modifier.width(150.dp),
+                            height = 28.dp,
+                            small = true,
+                        )
+                    }
                     DonutCard(
                         expenseCents = spendingReady,
                         slices = slices,

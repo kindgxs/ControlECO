@@ -2,6 +2,8 @@ package com.controleco.app.data.plan
 
 import java.time.LocalDate
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** 分期 / 周期记账纯函数单测（功能2）。 */
@@ -83,5 +85,35 @@ class PlanMathTest {
         assertEquals(RecurringFrequency.MONTHLY, RecurringFrequency.of(null))
         assertEquals(RecurringFrequency.MONTHLY, RecurringFrequency.of("WHATEVER"))
         assertEquals(RecurringFrequency.WEEKLY, RecurringFrequency.of("WEEKLY"))
+    }
+
+    @Test
+    fun `当前期数按首期日期与今天自动推算`() {
+        val first = LocalDate.of(2026, 1, 10)
+        assertEquals(1, InstallmentMath.currentPeriod(first, LocalDate.of(2026, 1, 9), 12))
+        assertEquals(1, InstallmentMath.currentPeriod(first, LocalDate.of(2026, 1, 10), 12))
+        assertEquals(1, InstallmentMath.currentPeriod(first, LocalDate.of(2026, 2, 9), 12))
+        assertEquals(2, InstallmentMath.currentPeriod(first, LocalDate.of(2026, 2, 10), 12))
+        // 超过最后一期时停在总期数
+        assertEquals(12, InstallmentMath.currentPeriod(first, LocalDate.of(2027, 6, 1), 12))
+        assertEquals(1, InstallmentMath.currentPeriod(first, LocalDate.of(2026, 1, 10), 0))
+    }
+
+    @Test
+    fun `指定不扣资产的期数解析与编码`() {
+        assertEquals(setOf(1, 3, 12), InstallmentMath.parseExcludedPeriods(" 1, 3,12 ", 12))
+        assertEquals(emptySet<Int>(), InstallmentMath.parseExcludedPeriods("", 12))
+        // 越界期数被忽略
+        assertEquals(setOf(1, 12), InstallmentMath.parseExcludedPeriods("0,1,13,12", 12))
+        assertEquals("1,3,12", InstallmentMath.encodeExcludedPeriods(setOf(12, 1, 3), 12))
+        assertEquals("", InstallmentMath.encodeExcludedPeriods(setOf(13), 12))
+    }
+
+    @Test
+    fun `不扣资产判断_总开关与指定期数`() {
+        assertFalse(InstallmentMath.excludesAsset(true, "", 12, 1))
+        assertTrue(InstallmentMath.excludesAsset(false, "", 12, 1))
+        assertTrue(InstallmentMath.excludesAsset(true, "2,4", 12, 4))
+        assertFalse(InstallmentMath.excludesAsset(true, "2,4", 12, 3))
     }
 }

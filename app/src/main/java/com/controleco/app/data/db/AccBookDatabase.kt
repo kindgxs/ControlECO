@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         InstallmentPlanEntity::class,
         RecurringPlanEntity::class,
     ],
-    version = 14,
+    version = 15,
     exportSchema = true,
 )
 abstract class AccBookDatabase : RoomDatabase() {
@@ -320,6 +320,20 @@ abstract class AccBookDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v15：账户分「存款 / 信用卡」；分期计划支持按期限指定「只记账、不扣资产」。
+         * 老账户里填过信用额度的自动认成信用卡，其余为存款。
+         */
+        private val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE accounts ADD COLUMN kind TEXT NOT NULL DEFAULT 'CASH'")
+                db.execSQL("UPDATE accounts SET kind = 'CREDIT' WHERE creditLimitCents > 0")
+                db.execSQL(
+                    "ALTER TABLE installment_plans ADD COLUMN excludeAssetPeriods TEXT NOT NULL DEFAULT ''",
+                )
+            }
+        }
+
         @Volatile
         private var instance: AccBookDatabase? = null
 
@@ -333,7 +347,7 @@ abstract class AccBookDatabase : RoomDatabase() {
                     .addMigrations(
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                         MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
-                        MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14,
+                        MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15,
                     )
                     .build().also { instance = it }
             }

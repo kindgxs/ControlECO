@@ -20,6 +20,7 @@ import com.controleco.app.capture.ScreenReaderAccess
 import com.controleco.app.csv.BillParsers
 import com.controleco.app.data.db.AccountBalanceRow
 import com.controleco.app.data.db.AccountEntity
+import com.controleco.app.data.db.AccountKind
 import com.controleco.app.data.db.CaptureChannel
 import com.controleco.app.data.db.CaptureTraceRow
 import com.controleco.app.data.db.CapturedNotificationEntity
@@ -35,6 +36,7 @@ import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TypeTotalRow
 import com.controleco.app.data.db.TxSource
 import com.controleco.app.data.db.TxType
+import com.controleco.app.data.backup.BackupCsv
 import com.controleco.app.data.backup.BackupStore
 import com.controleco.app.data.budget.Budget
 import com.controleco.app.data.budget.CategoryBudgetMath
@@ -46,6 +48,8 @@ import com.controleco.app.data.budget.MonthPeriod
 import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.SubcategoryRollupMode
 import com.controleco.app.data.deposit.DepositMath
+import com.controleco.app.data.model.AssetAccountSnapshot
+import com.controleco.app.data.model.AssetMath
 import com.controleco.app.data.model.AssetSummary
 import com.controleco.app.data.model.BillSource
 import com.controleco.app.data.plan.PLAN_TX_TYPE
@@ -246,10 +250,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
-    /** 月预算输入（金额模式）：cents ≤ 0 视为未设置 */
+    /** 月预算输入（金额模式）：cents ≤ 0 视为未设置；日预算按本期天数自动折算 */
     fun setMonthlyBudget(cents: Long) {
         prefs.edit().putLong(KEY_MONTHLY_BUDGET, cents).apply()
         _monthlyBudgetAmount.value = cents
+        syncDailyFromMonthly()
         AppLog.i("settings", "monthlyBudget=${Money.formatYuan(cents)}")
     }
 
@@ -260,17 +265,26 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.i("settings", "dailyBudget=${Money.formatYuan(cents)}")
     }
 
+    /** 日预算 = 月预算 ÷ 本期天数（四舍五入到分）；只在按月设置时自动同步 */
+    private fun syncDailyFromMonthly() {
+        val monthly = _monthlyBudgetAmount.value
+        if (!_dailyBudgetMode.value || monthly <= 0L) return
+        val days = MonthPeriod.of(LocalDate.now(zone), _monthStartDay.value).days
+        val daily = Budget.dailyEquivalent(monthly, days)
+        prefs.edit().putLong(KEY_DAILY_BUDGET, daily).apply()
+        _dailyBudgetAmount.value = daily
+    }
+
     /**
-     * 切换日/月预算：切到按日时若日预算还是空的，用"月预算 ÷ 本期天数"预填；
-     * 反向切回月预算时同理用"日预算 × 本期天数"预填——个人页预算卡的日均靠月预算折算，
-     * 月预算若是空的，卡片会突然显示「未设置」，看起来像数据丢了。
+     * 切换日/月预算：切到按日时按当前月预算自动折算日均（月预算为空才保留手填值）；
+     * 反向切回月预算时用"日预算 × 本期天数"补上全局月预算。
      */
     fun setDailyBudgetMode(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_DAILY_BUDGET_MODE, enabled).apply()
         _dailyBudgetMode.value = enabled
         val days = MonthPeriod.of(LocalDate.now(zone), _monthStartDay.value).days
-        if (enabled && _dailyBudgetAmount.value <= 0L && _monthlyBudgetAmount.value > 0L) {
-            setDailyBudget((_monthlyBudgetAmount.value + days - 1) / days)
+        if (enabled && _monthlyBudgetAmount.value > 0L) {
+            setDailyBudget(Budget.dailyEquivalent(_monthlyBudgetAmount.value, days))
         } else if (!enabled && _monthlyBudgetAmount.value <= 0L && _dailyBudgetAmount.value > 0L) {
             setMonthlyBudget(_dailyBudgetAmount.value * days)
         }
@@ -674,7 +688,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- 账户 ----------
 
     /**
-     * 保存账户。`creditLimitCents > 0` 视为信用卡（可参与共用额度组）。
+     * 保存账户。[kind] 区分存款 / 信用卡；只有信用卡才有额度与共用额度组，
+     * 改成存款时会自动清掉额度与组关系。
      * `isDefault = true` 会把它设为唯一默认账户。
      */
     fun saveAccount(
@@ -685,28 +700,39 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         creditLimitCents: Long = 0L,
         sharedGroupId: Long = 0L,
         isDefault: Boolean = false,
+        kind: AccountKind = AccountKind.CASH,
         onResult: (String?) -> Unit,
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 if (isDefault) accountDao.clearDefaults()
+                val limit = if (kind == AccountKind.CREDIT) creditLimitCents.coerceAtLeast(0L) else 0L
+                val group = if (kind == AccountKind.CREDIT) sharedGroupId.coerceAtLeast(0L) else 0L
                 if (id > 0) {
                     accountDao.getById(id)?.let { old ->
                         accountDao.update(
                             old.copy(
                                 name = name, initialBalanceCents = initialBalanceCents, note = note,
-                                creditLimitCents = creditLimitCents.coerceAtLeast(0L),
-                                sharedGroupId = sharedGroupId.coerceAtLeast(0L),
+                                kind = kind,
+                                creditLimitCents = limit,
+                                sharedGroupId = group,
                                 isDefault = isDefault || old.isDefault,
                             ),
                         )
+                        // 退出共用额度组：同组其余卡一并回到独立状态
+                        if (old.sharedGroupId != 0L && group == 0L) {
+                            accountDao.getAll()
+                                .filter { it.sharedGroupId == old.sharedGroupId && it.id != old.id }
+                                .forEach { accountDao.update(it.copy(sharedGroupId = 0L)) }
+                        }
                     }
                 } else {
                     accountDao.insert(
                         AccountEntity(
                             name = name, initialBalanceCents = initialBalanceCents, note = note,
-                            creditLimitCents = creditLimitCents.coerceAtLeast(0L),
-                            sharedGroupId = sharedGroupId.coerceAtLeast(0L),
+                            kind = kind,
+                            creditLimitCents = limit,
+                            sharedGroupId = group,
                             isDefault = isDefault,
                         ),
                     )
@@ -1626,14 +1652,18 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
      * 余额 ≥ 0 计入存款，余额 < 0 计入负债（信用卡欠款、透支等）。
      */
     val assetSummary: StateFlow<AssetSummary?> = combine(accounts, accountBalances) { accs, rows ->
-        val balanceById = rows.associate { it.accountId to (it.initialBalanceCents + it.signedSumCents) }
-        var deposit = 0L
-        var liability = 0L
-        accs.forEach { account ->
-            val balance = balanceById[account.id] ?: account.initialBalanceCents
-            if (balance >= 0L) deposit += balance else liability += -balance
-        }
-        AssetSummary(deposit, liability, accs.size)
+        val byId = rows.associateBy { it.accountId }
+        AssetMath.summarize(
+            accs.map { account ->
+                val row = byId[account.id]
+                AssetAccountSnapshot(
+                    id = account.id,
+                    sharedGroupId = account.sharedGroupId,
+                    initialBalanceCents = row?.initialBalanceCents ?: account.initialBalanceCents,
+                    flowCents = row?.signedSumCents ?: 0L,
+                )
+            },
+        )
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     // ---------- 存款目标与存款分析（功能7） ----------
@@ -1719,6 +1749,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         periods: Int,
         firstDateMillis: Long,
         deductAsset: Boolean,
+        excludeAssetPeriods: String = "",
         note: String = "",
         onResult: (String?) -> Unit,
     ) {
@@ -1741,6 +1772,10 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     periods = periods,
                     firstDateMillis = firstDateMillis,
                     deductAsset = deductAsset,
+                    excludeAssetPeriods = InstallmentMath.encodeExcludedPeriods(
+                        InstallmentMath.parseExcludedPeriods(excludeAssetPeriods, periods),
+                        periods,
+                    ),
                     note = note,
                     postedPeriods = oldPlan?.postedPeriods ?: 0,
                     createdAt = oldPlan?.createdAt ?: System.currentTimeMillis(),
@@ -1848,7 +1883,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         note = plan.note.ifBlank { "${plan.title} 第${index}/${plan.periods}期" },
                         counterparty = plan.title,
                         source = TxSource.MANUAL,
-                        excludeFromAssets = !plan.deductAsset,
+                        excludeFromAssets = InstallmentMath.excludesAsset(
+                            plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
+                        ),
                     ),
                 )
                 planDao.updateInstallment(plan.copy(postedPeriods = index))
@@ -1911,14 +1948,32 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** 从备份文件恢复：清空当前账单/分类/账户/计划后重建，并恢复设置 */
+    /** 导出 CSV 账单（Excel 可直接打开，含账户、一二级分类、账单、预算、存款与设置） */
+    fun exportBackupCsv(uri: Uri, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val text = BackupCsv.exportCsv(db, prefs)
+                getApplication<AccBookApp>().contentResolver.openOutputStream(uri)?.use {
+                    // 带 BOM，Excel 双击打开中文不乱码
+                    it.write(("\uFEFF" + text).toByteArray(Charsets.UTF_8))
+                } ?: throw IllegalStateException("无法写入所选文件")
+                AppLog.i("backup", "exported csv ${text.length} chars")
+                mainResult(onDone, null)
+            } catch (e: Exception) {
+                AppLog.e("backup", "csv export failed", e)
+                mainResult(onDone, e.message ?: "导出失败")
+            }
+        }
+    }
+
+    /** 从备份文件恢复：清空当前账单/分类/账户/计划后重建，并恢复设置（JSON / CSV / XLSX 自动识别） */
     fun importBackup(uri: Uri, onDone: (String?) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 val bytes = getApplication<AccBookApp>().contentResolver.openInputStream(uri)?.use {
                     it.readBytes()
                 } ?: throw IllegalStateException("无法读取所选文件")
-                val count = BackupStore.importJson(getApplication(), db, prefs, bytes.toString(Charsets.UTF_8))
+                val count = BackupStore.importFile(getApplication(), db, prefs, bytes)
                 // 设置可能变了（月首日 / 货币 / 预算），重新载入内存状态
                 reloadSettingsFromPrefs()
                 AppLog.i("backup", "restored $count transactions")

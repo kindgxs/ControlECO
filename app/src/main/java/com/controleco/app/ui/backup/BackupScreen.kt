@@ -49,6 +49,14 @@ fun BackupScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             EcoToast.show(err ?: "备份已导出", if (err == null) EcoPillTone.Good else EcoPillTone.Bad)
         }
     }
+    val csvExporter = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("text/csv"),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        vm.exportBackupCsv(uri) { err ->
+            EcoToast.show(err ?: "CSV 账单已导出", if (err == null) EcoPillTone.Good else EcoPillTone.Bad)
+        }
+    }
     val importer = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
@@ -70,15 +78,23 @@ fun BackupScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     Column(Modifier.fillMaxWidth()) {
                         EcoRow(
                             title = "导出备份",
-                            subtitle = "账单 + 一二级分类 + 分期周期 + 设置",
+                            subtitle = "完整数据：账单 + 一二级分类 + 分期周期 + 设置",
                             icon = EcoIcons.Download,
                             onClick = { exporter.launch("controleco-backup.json") },
                             showChevron = true,
                         )
                         EcoRowDivider()
                         EcoRow(
+                            title = "导出 CSV 账单",
+                            subtitle = "Excel 可直接打开：账户 / 一二级分类 / 账单 / 预算 / 存款 / 设置",
+                            icon = EcoIcons.Receipt,
+                            onClick = { csvExporter.launch("controleco-bills.csv") },
+                            showChevron = true,
+                        )
+                        EcoRowDivider()
+                        EcoRow(
                             title = "导入还原",
-                            subtitle = "选择之前导出的 JSON 备份文件",
+                            subtitle = "支持 JSON / CSV / Excel(.xlsx) 备份文件",
                             icon = EcoIcons.File,
                             onClick = { pendingImport = true },
                             showChevron = true,
@@ -89,6 +105,7 @@ fun BackupScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             item(key = "note") {
                 EcoPageNote(
                     "备份文件保存在你选择的目录里，只包含账单、分类、分期周期计划与设置。" +
+                        "CSV 账单可以用 Excel 打开查看，另存为 .xlsx 后同样能导入还原。" +
                         "导入会覆盖本机现有数据，建议先导出一份当前备份。",
                 )
             }
@@ -104,7 +121,17 @@ fun BackupScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             danger = true,
             onConfirm = {
                 pendingImport = false
-                importer.launch(arrayOf("application/json", "text/plain", "*/*"))
+                importer.launch(
+                    arrayOf(
+                        "application/json",
+                        "text/csv",
+                        "text/comma-separated-values",
+                        "text/plain",
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "application/vnd.ms-excel",
+                        "*/*",
+                    ),
+                )
             },
             onDismiss = { pendingImport = false },
         )

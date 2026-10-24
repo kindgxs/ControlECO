@@ -90,7 +90,10 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     var editingRecurring by remember { mutableStateOf<RecurringPlanEntity?>(null) }
 
     val accountName = remember(accounts) { accounts.associate { it.id to it.name } }
-    val categoryName = remember(categories) { categories.associate { it.id to it.name } }
+    val categoryPath = remember(categories) {
+        val byId = categories.associateBy { it.id }
+        categories.associate { it.id to (it.parentId?.let { p -> byId[p]?.name }?.let { n -> "$n / ${it.name}" } ?: it.name) }
+    }
 
     fun openInstallment(plan: InstallmentPlanEntity?) {
         editingInstallment = plan
@@ -148,7 +151,7 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         InstallmentCard(
                             plan = plan,
                             accountName = accountName[plan.accountId] ?: "账户",
-                            categoryName = categoryName[plan.categoryId] ?: "分类",
+                            categoryName = categoryPath[plan.categoryId] ?: "分类",
                             onClick = { openInstallment(plan) },
                             onPost = { postInstallment(plan) },
                         )
@@ -171,7 +174,7 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         RecurringCard(
                             plan = plan,
                             accountName = accountName[plan.accountId] ?: "账户",
-                            categoryName = categoryName[plan.categoryId] ?: "分类",
+                            categoryName = categoryPath[plan.categoryId] ?: "分类",
                             onClick = { openRecurring(plan) },
                             onPost = { postRecurring(plan) },
                         )
@@ -206,12 +209,13 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             initial = editingInstallment,
             accounts = accounts,
             categories = categories,
-            onSave = { id, title, accountId, categoryId, principal, interest, periods, firstDate, deduct, note, onResult ->
+            onSave = { id, title, accountId, categoryId, principal, interest, periods, firstDate, deduct, excludePeriods, note, onResult ->
                 vm.saveInstallment(
                     id = id, title = title, accountId = accountId, categoryId = categoryId,
                     totalPrincipalCents = principal, totalInterestCents = interest,
                     periods = periods, firstDateMillis = RecurringMath.millisAt(firstDate),
-                    deductAsset = deduct, note = note, onResult = onResult,
+                    deductAsset = deduct, excludeAssetPeriods = excludePeriods,
+                    note = note, onResult = onResult,
                 )
             },
             onDelete = editingInstallment?.let { plan ->
@@ -255,9 +259,12 @@ private fun InstallmentCard(
     onPost: () -> Unit,
 ) {
     val c = MaterialTheme.eco
+    val today = LocalDate.now()
+    val firstDate = RecurringMath.dateOf(plan.firstDateMillis)
+    val currentIndex = InstallmentMath.currentPeriod(firstDate, today, plan.periods)
     val done = plan.postedPeriods >= plan.periods
     val nextIndex = (plan.postedPeriods + 1).coerceAtMost(plan.periods)
-    val nextDate = InstallmentMath.periodDate(RecurringMath.dateOf(plan.firstDateMillis), nextIndex)
+    val nextDate = InstallmentMath.periodDate(firstDate, nextIndex)
     val perCents = InstallmentMath.periodTotal(
         plan.totalPrincipalCents, plan.totalInterestCents, plan.periods, nextIndex,
     )
@@ -279,7 +286,7 @@ private fun InstallmentCard(
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        "第 ${plan.postedPeriods}/${plan.periods} 期",
+                        if (done) "已记完" else "当前第 ${currentIndex}/${plan.periods} 期",
                         style = EcoType.RowSub,
                         color = if (done) c.jade else c.muted,
                     )
@@ -288,11 +295,18 @@ private fun InstallmentCard(
                 Text(
                     buildString {
                         append(accountName).append(" · ").append(categoryName)
-                        if (!plan.deductAsset) append(" · 不扣资产")
+                        if (!plan.deductAsset) {
+                            append(" · 全部只记账不扣资产")
+                        } else {
+                            val excluded = InstallmentMath.parseExcludedPeriods(plan.excludeAssetPeriods, plan.periods)
+                            if (excluded.isNotEmpty()) {
+                                append(" · 第 ").append(excluded.sorted().joinToString(",")).append(" 期不扣资产")
+                            }
+                        }
                     },
                     style = EcoType.RowSub,
                     color = c.muted,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
                 Spacer(Modifier.height(6.dp))
@@ -300,7 +314,8 @@ private fun InstallmentCard(
                     if (done) {
                         "已全部记完 · 总还款 ${Money.formatYuanGroupedFixed(InstallmentMath.totalRepayment(plan.totalPrincipalCents, plan.totalInterestCents))}"
                     } else {
-                        "下期 ${nextDate.monthValue}/${nextDate.dayOfMonth} · 每期 ${Money.formatYuanGroupedFixed(perCents)}" +
+                        "已记 ${plan.postedPeriods} 期 · 下期 ${nextDate.monthValue}/${nextDate.dayOfMonth} · 每期 " +
+                            Money.formatYuanGroupedFixed(perCents) +
                             " （本金 ${Money.formatYuanGroupedFixed(InstallmentMath.principalOf(plan.totalPrincipalCents, plan.periods, nextIndex))}" +
                             " + 利息 ${Money.formatYuanGroupedFixed(InstallmentMath.interestOf(plan.totalInterestCents, plan.periods, nextIndex))}）"
                     },
@@ -490,7 +505,7 @@ private fun InstallmentEditorSheet(
     accounts: List<AccountEntity>,
     categories: List<CategoryEntity>,
     onSave: (
-        Long, String, Long, Long, Long, Long, Int, LocalDate, Boolean, String, (String?) -> Unit,
+        Long, String, Long, Long, Long, Long, Int, LocalDate, Boolean, String, String, (String?) -> Unit,
     ) -> Unit,
     onDelete: (((String?) -> Unit) -> Unit)?,
     onClose: () -> Unit,
@@ -510,6 +525,7 @@ private fun InstallmentEditorSheet(
     var accountId by remember(initial?.id) { mutableStateOf(initial?.accountId ?: (accounts.firstOrNull()?.id ?: 0L)) }
     var categoryId by remember(initial?.id) { mutableStateOf(initial?.categoryId ?: 0L) }
     var deduct by remember(initial?.id) { mutableStateOf(initial?.deductAsset ?: true) }
+    var excludePeriodsText by remember(initial?.id) { mutableStateOf(initial?.excludeAssetPeriods ?: "") }
     var note by remember(initial?.id) { mutableStateOf(initial?.note ?: "") }
     var localError by remember(initial?.id) { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -568,6 +584,15 @@ private fun InstallmentEditorSheet(
                 onCheckedChange = { deduct = !it },
                 subtitle = "开启后每期入账不会改变账户余额",
             )
+            if (deduct) {
+                EcoField(
+                    label = "指定不扣资产的期数",
+                    value = excludePeriodsText,
+                    onValueChange = { excludePeriodsText = it.filter { ch -> ch.isDigit() || ch == ',' }; localError = null },
+                    placeholder = "例如 1,3,12（留空 = 每期都扣资产）",
+                    supporting = "逗号分隔；这些期入账时只记账、不改变账户余额",
+                )
+            }
 
             Text(
                 "每期约 ${Money.formatYuanGroupedFixed(perPeriod)} · 总还款 " +
@@ -589,16 +614,23 @@ private fun InstallmentEditorSheet(
             EcoGhostButton(
                 text = "保存",
                 onClick = {
+                    val excludeSet = InstallmentMath.parseExcludedPeriods(excludePeriodsText, periods)
+                    val excludeTokens = excludePeriodsText.split(',').map { it.trim() }.filter { it.isNotEmpty() }
+                    val excludeInvalid = excludeTokens.any { it.toIntOrNull()?.let { n -> n in 1..periods } != true }
                     when {
                         title.isBlank() -> localError = "请输入名称"
                         principal <= 0L -> localError = "请输入总本金"
                         periods !in InstallmentMath.MIN_PERIODS..InstallmentMath.MAX_PERIODS ->
                             localError = "期数需在 1~${InstallmentMath.MAX_PERIODS} 之间"
+                        deduct && excludeInvalid ->
+                            localError = "不扣资产的期数需在 1~$periods 之间，用逗号分隔"
                         accountId <= 0L -> localError = "请选择账户"
                         categoryId <= 0L -> localError = "请选择分类"
                         else -> onSave(
                             initial?.id ?: 0L, title.trim(), accountId, categoryId,
-                            principal, interest, periods, firstDate, deduct, note.trim(),
+                            principal, interest, periods, firstDate, deduct,
+                            if (deduct) InstallmentMath.encodeExcludedPeriods(excludeSet, periods) else "",
+                            note.trim(),
                         ) { err ->
                             if (err == null) {
                                 EcoToast.show("已保存")

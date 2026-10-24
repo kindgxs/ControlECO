@@ -307,12 +307,6 @@ fun ProfileScreen(
                 onOpenMonthStart = { showMonthStart = true },
             )
 
-            BottomRow(
-                onOpenPlan = onOpenPlan,
-                onOpenBackup = onOpenImport,
-                onTheme = { showTheme = true },
-            )
-
             EcoArrival(randomDelay = true, delayMillis = 700, turn = 1.8f) {
                 DepositEntry(
                     goalCents = depositGoal,
@@ -320,6 +314,12 @@ fun ProfileScreen(
                     onClick = onOpenDeposit,
                 )
             }
+
+            BottomRow(
+                onOpenPlan = onOpenPlan,
+                onOpenBackup = onOpenImport,
+                onTheme = { showTheme = true },
+            )
         }
     }
 

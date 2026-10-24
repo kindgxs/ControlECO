@@ -32,11 +32,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.CategoryTree
@@ -56,7 +54,6 @@ import com.controleco.app.ui.eco.EcoSheet
 import com.controleco.app.ui.eco.EcoTextAction
 import com.controleco.app.ui.eco.EcoToast
 import com.controleco.app.ui.eco.EcoTopBar
-import com.controleco.app.ui.eco.ecoPressable
 import com.controleco.app.ui.theme.EcoType
 import com.controleco.app.ui.theme.eco
 import com.controleco.app.util.Money
@@ -332,21 +329,6 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
                 enabled = valid,
                 height = 46.dp,
             )
-
-            if (txId > 0 && existing != null) {
-                Spacer(Modifier.height(12.dp))
-                Text(
-                    "删除这笔记录",
-                    style = TxDeleteLinkStyle,
-                    color = c.clay,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .ecoPressable(scaleTo = 0.97f) { showDeleteConfirm = true }
-                        .padding(vertical = 8.dp),
-                )
-            }
 
             Spacer(Modifier.height(26.dp))
         }

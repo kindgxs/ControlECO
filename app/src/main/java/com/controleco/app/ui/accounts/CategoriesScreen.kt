@@ -36,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -115,6 +116,7 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     var editing by remember { mutableStateOf<CategoryEntity?>(null) }
     var editingParent by remember { mutableStateOf<CategoryEntity?>(null) }
     var actionTarget by remember { mutableStateOf<CategoryEntity?>(null) }
+    var sortMode by remember { mutableStateOf(false) }
     var draftIcon by remember { mutableStateOf("") }
     var sheetError by remember { mutableStateOf<String?>(null) }
     // 本次编辑里刚导入、还没保存的图片：取消时删掉，避免留孤儿文件
@@ -162,12 +164,19 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 title = "分类管理",
                 onBack = onBack,
                 action = {
-                    EcoIconButton(
-                        icon = EcoIcons.Plus,
-                        contentDescription = "新增分类",
-                        onClick = { openEditor(null) },
-                        size = 38.dp,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        EcoTextAction(
+                            text = if (sortMode) "完成" else "排序",
+                            onClick = { sortMode = !sortMode },
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        EcoIconButton(
+                            icon = EcoIcons.Plus,
+                            contentDescription = "新增分类",
+                            onClick = { openEditor(null) },
+                            size = 38.dp,
+                        )
+                    }
                 },
             )
 
@@ -234,6 +243,8 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                                         depth = if (category.parentId == null) 0 else 1,
                                         onClick = { openEditor(category) },
                                         onLongClick = { actionTarget = category },
+                                        onMoveUp = if (sortMode) ({ vm.moveCategory(category.id, true) }) else null,
+                                        onMoveDown = if (sortMode) ({ vm.moveCategory(category.id, false) }) else null,
                                     )
                                     if (index != expenseRows.lastIndex) EcoRowDivider(inset = 15.dp)
                                 }
@@ -265,6 +276,8 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                                         depth = if (category.parentId == null) 0 else 1,
                                         onClick = { openEditor(category) },
                                         onLongClick = { actionTarget = category },
+                                        onMoveUp = if (sortMode) ({ vm.moveCategory(category.id, true) }) else null,
+                                        onMoveDown = if (sortMode) ({ vm.moveCategory(category.id, false) }) else null,
                                     )
                                     if (index != incomeRows.lastIndex) EcoRowDivider(inset = 15.dp)
                                 }
@@ -419,6 +432,8 @@ private fun CategoryRowItem(
     depth: Int,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onMoveUp: (() -> Unit)? = null,
+    onMoveDown: (() -> Unit)? = null,
 ) {
     val c = MaterialTheme.eco
     val isExpense = category.type == TxType.EXPENSE
@@ -454,7 +469,12 @@ private fun CategoryRowItem(
             modifier = Modifier.weight(1f),
         )
         Spacer(Modifier.width(8.dp))
-        if (value == null) {
+        if (onMoveUp != null && onMoveDown != null) {
+            // 排序模式：直接给上下移动，一级 / 二级分类都能调
+            MoveArrow(up = true, onClick = onMoveUp)
+            Spacer(Modifier.width(6.dp))
+            MoveArrow(up = false, onClick = onMoveDown)
+        } else if (value == null) {
             Text("未设预算", style = EcoType.RowTrail, color = c.quiet, maxLines = 1)
         } else {
             Text(
@@ -464,6 +484,27 @@ private fun CategoryRowItem(
                 maxLines = 1,
             )
         }
+    }
+}
+
+/** 排序模式下的上移 / 下移按钮（箭头由 Chevron 旋转得到，保持图标体系一致） */
+@Composable
+private fun MoveArrow(up: Boolean, onClick: () -> Unit) {
+    val c = MaterialTheme.eco
+    Box(
+        Modifier
+            .size(30.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .background(c.surface2)
+            .ecoPressable(scaleTo = 0.9f, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            EcoIcons.Chev,
+            contentDescription = if (up) "上移" else "下移",
+            tint = c.muted,
+            modifier = Modifier.size(13.dp).rotate(if (up) -90f else 90f),
+        )
     }
 }
 

@@ -15,6 +15,12 @@ enum class CaptureChannel { NOTIFICATION, A11Y, SMS }
 /** 交易来源：手动输入 / 微信账单 / 支付宝账单 / 通知捕获（含页面/短信/银行推送，外部凭去重键区分）/ 银行动账 */
 enum class TxSource { MANUAL, WECHAT, ALIPAY, NOTIFICATION, BANK }
 
+/** 账户类型：存款（现金 / 储蓄卡 / 电子钱包）或信用卡 */
+enum class AccountKind(val label: String) {
+    CASH("存款"),
+    CREDIT("信用卡"),
+}
+
 /**
  * 退款标记：
  * - NONE：普通记录（用户把待处理的退款「记为收入」后也回到 NONE）
@@ -31,6 +37,9 @@ data class AccountEntity(
     val initialBalanceCents: Long = 0,
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
+    /** 账户类型：存款 / 信用卡（信用卡才有额度与共用额度） */
+    @ColumnInfo(defaultValue = "CASH")
+    val kind: AccountKind = AccountKind.CASH,
     /** 默认账户（记账时优先选中；全局最多一个，0 = 否） */
     @ColumnInfo(defaultValue = "0")
     val isDefault: Boolean = false,
@@ -132,6 +141,9 @@ data class InstallmentPlanEntity(
     /** true = 每期入账同时扣资产；false = 只记账（余额不变） */
     @ColumnInfo(defaultValue = "1")
     val deductAsset: Boolean = true,
+    /** 单独指定「只记账、不扣资产」的期数：逗号分隔（例 "1,3,12"）；空 = 只按 deductAsset */
+    @ColumnInfo(defaultValue = "")
+    val excludeAssetPeriods: String = "",
     val note: String = "",
     /** 已记期数（0..periods）：下一期的序号 = 已记期数 + 1 */
     @ColumnInfo(defaultValue = "0")

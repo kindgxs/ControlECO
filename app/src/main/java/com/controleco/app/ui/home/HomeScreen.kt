@@ -87,6 +87,8 @@ import com.controleco.app.data.db.CategorySumRow
 import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TxType
+import com.controleco.app.data.model.AssetAccountSnapshot
+import com.controleco.app.data.model.AssetMath
 import com.controleco.app.data.model.AssetSummary
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.common.rememberReducedMotion
@@ -857,6 +859,19 @@ private fun ModeSpentAndDeposit(
 ) {
     val c = MaterialTheme.eco
     // 资产页可下拉：本月已花 → 净资产（存款 / 负债）→ 我的资产账户余额
+    val snapshots = remember(accounts, balances) {
+        accounts.map { account ->
+            val row = balances.firstOrNull { it.accountId == account.id }
+            AssetAccountSnapshot(
+                id = account.id,
+                sharedGroupId = account.sharedGroupId,
+                initialBalanceCents = row?.initialBalanceCents ?: account.initialBalanceCents,
+                flowCents = row?.signedSumCents ?: 0L,
+            )
+        }
+    }
+    // 共用额度组内的卡流水一致（扣卡 1 卡 2 同步）
+    val displayFlows = remember(snapshots) { AssetMath.displayedFlows(snapshots) }
     Column(
         Modifier
             .fillMaxSize()
@@ -911,7 +926,7 @@ private fun ModeSpentAndDeposit(
                     accounts.forEachIndexed { index, account ->
                         val bal = balances.firstOrNull { it.accountId == account.id }
                         val cents = (bal?.initialBalanceCents ?: account.initialBalanceCents) +
-                            (bal?.signedSumCents ?: 0L)
+                            (displayFlows[account.id] ?: bal?.signedSumCents ?: 0L)
                         AssetAccountRow(name = account.name, cents = cents)
                         if (index != accounts.lastIndex) {
                             Box(

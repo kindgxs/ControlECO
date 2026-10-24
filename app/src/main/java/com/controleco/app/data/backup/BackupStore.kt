@@ -3,8 +3,11 @@ package com.controleco.app.data.backup
 import android.content.Context
 import android.content.SharedPreferences
 import androidx.room.withTransaction
+import com.controleco.app.csv.CsvReader
+import com.controleco.app.csv.XlsxReader
 import com.controleco.app.data.db.AccBookDatabase
 import com.controleco.app.data.db.AccountEntity
+import com.controleco.app.data.db.AccountKind
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.InstallmentPlanEntity
 import com.controleco.app.data.db.RecurringPlanEntity
@@ -15,22 +18,32 @@ import com.controleco.app.data.db.TxType
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** 一份完整备份的内存形态（JSON / CSV / XLS 共用） */
+internal data class BackupData(
+    val accounts: List<AccountEntity> = emptyList(),
+    val categories: List<CategoryEntity> = emptyList(),
+    val transactions: List<TransactionEntity> = emptyList(),
+    val installments: List<InstallmentPlanEntity> = emptyList(),
+    val recurring: List<RecurringPlanEntity> = emptyList(),
+)
+
 /**
  * 备份 / 还原：把一个账本完整地写成一个 JSON 文件，再原样恢复。
  *
  * 内容：
- * - accounts（含默认账户、信用卡额度、共用额度组）
+ * - accounts（含类型、默认账户、信用卡额度、共用额度组）
  * - categories（含一级 / 二级分类、排序、图标）
  * - transactions（全部账单，含退款标记与「不扣资产」标记）
  * - installment_plans / recurring_plans
  * - settings（SharedPreferences 里的全部设置；卡面图片的本地 URI 不导出）
  *
  * 恢复时先清空当前账本再重建，id 原样保留，所以分类/账户的关联不会断。
+ * CSV / XLS 账单由 [BackupCsv] 负责，本类提供共用的读写与格式识别。
  */
 object BackupStore {
 
     private const val APP_TAG = "ControlECO"
-    private const val FORMAT_VERSION = 14
+    private const val FORMAT_VERSION = 15
 
     /** 不参与导出的设置键（本地文件路径，换设备后用不了） */
     private val EXCLUDED_SETTINGS = setOf(
@@ -41,11 +54,47 @@ object BackupStore {
         "card_image_",
     )
 
-    suspend fun exportJson(context: Context, db: AccBookDatabase, prefs: SharedPreferences): String {
+    /** 读出整本账（不含设置） */
+    internal suspend fun collect(db: AccBookDatabase): BackupData {
         val accountDao = db.accountDao()
         val categoryDao = db.categoryDao()
         val txDao = db.transactionDao()
         val planDao = db.planDao()
+        return BackupData(
+            accounts = accountDao.getAll(),
+            categories = categoryDao.getAll(),
+            transactions = txDao.getAllEntities(),
+            installments = planDao.getAllInstallments(),
+            recurring = planDao.getAllRecurring(),
+        )
+    }
+
+    /** 用备份内容替换本机账本（先清空再写入）@return 恢复的账单条数 */
+    internal suspend fun apply(db: AccBookDatabase, data: BackupData): Int {
+        val accountDao = db.accountDao()
+        val categoryDao = db.categoryDao()
+        val txDao = db.transactionDao()
+        val planDao = db.planDao()
+
+        db.withTransaction {
+            // 先删账单，再删分类/账户，避免外键 RESTRICT 挡住
+            txDao.deleteAll()
+            planDao.clearInstallments()
+            planDao.clearRecurring()
+            categoryDao.deleteAll()
+            accountDao.deleteAll()
+
+            if (data.accounts.isNotEmpty()) accountDao.insertAll(data.accounts)
+            if (data.categories.isNotEmpty()) categoryDao.insertAll(data.categories)
+            if (data.transactions.isNotEmpty()) txDao.insertAll(data.transactions)
+            data.installments.forEach { planDao.insertInstallment(it) }
+            data.recurring.forEach { planDao.insertRecurring(it) }
+        }
+        return data.transactions.size
+    }
+
+    suspend fun exportJson(context: Context, db: AccBookDatabase, prefs: SharedPreferences): String {
+        val data = collect(db)
 
         val root = JSONObject()
         root.put("app", APP_TAG)
@@ -53,19 +102,19 @@ object BackupStore {
         root.put("exportedAt", System.currentTimeMillis())
 
         root.put("accounts", JSONArray().apply {
-            accountDao.getAll().forEach { put(accountJson(it)) }
+            data.accounts.forEach { put(accountJson(it)) }
         })
         root.put("categories", JSONArray().apply {
-            categoryDao.getAll().forEach { put(categoryJson(it)) }
+            data.categories.forEach { put(categoryJson(it)) }
         })
         root.put("transactions", JSONArray().apply {
-            txDao.getAllEntities().forEach { put(transactionJson(it)) }
+            data.transactions.forEach { put(transactionJson(it)) }
         })
         root.put("installments", JSONArray().apply {
-            planDao.getAllInstallments().forEach { put(installmentJson(it)) }
+            data.installments.forEach { put(installmentJson(it)) }
         })
         root.put("recurring", JSONArray().apply {
-            planDao.getAllRecurring().forEach { put(recurringJson(it)) }
+            data.recurring.forEach { put(recurringJson(it)) }
         })
         root.put("settings", settingsJson(prefs))
         return root.toString()
@@ -82,36 +131,43 @@ object BackupStore {
         if (root.optString("app") != APP_TAG) {
             throw IllegalArgumentException("不是 ControlECO 的备份文件")
         }
-        val accounts = root.optJSONArray("accounts").toEntities(::accountOf)
-        val categories = root.optJSONArray("categories").toEntities(::categoryOf)
-        val transactions = root.optJSONArray("transactions").toEntities(::transactionOf)
-        val installments = root.optJSONArray("installments").toEntities(::installmentOf)
-        val recurring = root.optJSONArray("recurring").toEntities(::recurringOf)
-
-        val accountDao = db.accountDao()
-        val categoryDao = db.categoryDao()
-        val txDao = db.transactionDao()
-        val planDao = db.planDao()
-
-        db.withTransaction {
-            // 先删账单，再删分类/账户，避免外键 RESTRICT 挡住
-            txDao.deleteAll()
-            planDao.clearInstallments()
-            planDao.clearRecurring()
-            categoryDao.deleteAll()
-            accountDao.deleteAll()
-
-            if (accounts.isNotEmpty()) accountDao.insertAll(accounts)
-            if (categories.isNotEmpty()) categoryDao.insertAll(categories)
-            if (transactions.isNotEmpty()) txDao.insertAll(transactions)
-            installments.forEach { planDao.insertInstallment(it) }
-            recurring.forEach { planDao.insertRecurring(it) }
-        }
+        val data = BackupData(
+            accounts = root.optJSONArray("accounts").toEntities(::accountOf),
+            categories = root.optJSONArray("categories").toEntities(::categoryOf),
+            transactions = root.optJSONArray("transactions").toEntities(::transactionOf),
+            installments = root.optJSONArray("installments").toEntities(::installmentOf),
+            recurring = root.optJSONArray("recurring").toEntities(::recurringOf),
+        )
+        val count = apply(db, data)
 
         // 设置（在数据库成功之后再覆盖，避免恢复失败时把设置也弄丢）
-        val settings = root.optJSONObject("settings")
-        if (settings != null) restoreSettings(prefs, settings)
-        return transactions.size
+        root.optJSONObject("settings")?.let { restoreSettings(prefs, it) }
+        return count
+    }
+
+    /**
+     * 按文件内容自动识别格式并导入：
+     * - ZIP 魔数（PK）→ Excel .xlsx
+     * - 以 #ControlECO 开头 → CSV 账单
+     * - 其余按 JSON 备份处理
+     */
+    suspend fun importFile(
+        context: Context,
+        db: AccBookDatabase,
+        prefs: SharedPreferences,
+        bytes: ByteArray,
+    ): Int {
+        if (XlsxReader.isXlsx(bytes)) {
+            return BackupCsv.importRows(db, prefs, XlsxReader.parse(bytes))
+        }
+        val text = CsvReader.decode(bytes).removePrefix("\uFEFF").trimStart()
+        if (text.startsWith(BackupCsv.MARKER_PREFIX)) {
+            return BackupCsv.importRows(db, prefs, CsvReader.parse(text))
+        }
+        if (!text.startsWith("{")) {
+            throw IllegalArgumentException("不支持的文件格式，请选择 JSON / CSV / .xlsx 备份")
+        }
+        return importJson(context, db, prefs, text)
     }
 
     // ---------- 实体 → JSON ----------
@@ -119,6 +175,7 @@ object BackupStore {
     private fun accountJson(a: AccountEntity) = JSONObject().apply {
         put("id", a.id)
         put("name", a.name)
+        put("kind", a.kind.name)
         put("initialBalanceCents", a.initialBalanceCents)
         put("note", a.note)
         put("createdAt", a.createdAt)
@@ -164,6 +221,7 @@ object BackupStore {
         put("periods", p.periods)
         put("firstDateMillis", p.firstDateMillis)
         put("deductAsset", p.deductAsset)
+        put("excludeAssetPeriods", p.excludeAssetPeriods)
         put("note", p.note)
         put("postedPeriods", p.postedPeriods)
         put("createdAt", p.createdAt)
@@ -185,7 +243,8 @@ object BackupStore {
         put("createdAt", p.createdAt)
     }
 
-    private fun settingsJson(prefs: SharedPreferences) = JSONObject().apply {
+    /** 全部设置 → {"key": {"t": 类型, "v": 值}}；CSV 备份也复用这一份 */
+    internal fun settingsJson(prefs: SharedPreferences) = JSONObject().apply {
         prefs.all.forEach { (key, value) ->
             if (key in EXCLUDED_SETTINGS || EXCLUDED_PREFIXES.any { key.startsWith(it) }) return@forEach
             when (value) {
@@ -206,6 +265,12 @@ object BackupStore {
         initialBalanceCents = o.optLong("initialBalanceCents"),
         note = o.optString("note"),
         createdAt = o.optLong("createdAt"),
+        kind = if (o.has("kind")) {
+            enumOf<AccountKind>(o.optString("kind"), AccountKind.CASH)
+        } else {
+            // 旧备份没有 kind：有额度的一律视为信用卡（与 v15 迁移口径一致）
+            if (o.optLong("creditLimitCents") > 0L) AccountKind.CREDIT else AccountKind.CASH
+        },
         isDefault = o.optBoolean("isDefault"),
         creditLimitCents = o.optLong("creditLimitCents"),
         sharedGroupId = o.optLong("sharedGroupId"),
@@ -248,6 +313,7 @@ object BackupStore {
         periods = o.optInt("periods", 1),
         firstDateMillis = o.optLong("firstDateMillis"),
         deductAsset = o.optBoolean("deductAsset", true),
+        excludeAssetPeriods = o.optString("excludeAssetPeriods"),
         note = o.optString("note"),
         postedPeriods = o.optInt("postedPeriods"),
         createdAt = o.optLong("createdAt"),
@@ -282,7 +348,7 @@ object BackupStore {
     private inline fun <reified T : Enum<T>> enumOf(value: String?, fallback: T): T =
         enumValues<T>().firstOrNull { it.name == value } ?: fallback
 
-    private fun restoreSettings(prefs: SharedPreferences, settings: JSONObject) {
+    internal fun restoreSettings(prefs: SharedPreferences, settings: JSONObject) {
         val editor = prefs.edit().clear()
         settings.keys().forEach { key ->
             val wrapper = settings.optJSONObject(key) ?: return@forEach
