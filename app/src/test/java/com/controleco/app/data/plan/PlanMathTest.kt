@@ -110,6 +110,40 @@ class PlanMathTest {
     }
 
     @Test
+    fun `不扣资产期数支持区间写法`() {
+        // 1-3
+        assertEquals(setOf(1, 2, 3), InstallmentMath.parseExcludedPeriods("1-3", 12))
+        // 1-3,6
+        assertEquals(setOf(1, 2, 3, 6), InstallmentMath.parseExcludedPeriods("1-3,6", 12))
+        // 多个区间 + 全角标点 / 波浪号
+        assertEquals(setOf(1, 2, 3, 5, 6, 7), InstallmentMath.parseExcludedPeriods("1－3，5~7", 12))
+        // 超出总期数的部分被裁掉，反向区间忽略
+        assertEquals(setOf(10, 11, 12), InstallmentMath.parseExcludedPeriods("10-20", 12))
+        assertEquals(emptySet<Int>(), InstallmentMath.parseExcludedPeriods("5-3", 12))
+    }
+
+    @Test
+    fun `区间编码与解析互逆`() {
+        assertEquals("1-3,6", InstallmentMath.encodeExcludedPeriods(setOf(1, 2, 3, 6), 12))
+        assertEquals("3,4", InstallmentMath.encodeExcludedPeriods(setOf(3, 4), 12))
+        assertEquals("1,3", InstallmentMath.encodeExcludedPeriods(setOf(1, 3), 12))
+        val set = InstallmentMath.parseExcludedPeriods("1-3,6,9-10", 12)
+        assertEquals(setOf(1, 2, 3, 6, 9, 10), set)
+        assertEquals(set, InstallmentMath.parseExcludedPeriods(InstallmentMath.encodeExcludedPeriods(set, 12), 12))
+    }
+
+    @Test
+    fun `不扣资产期数非法输入校验`() {
+        assertFalse(InstallmentMath.hasInvalidExcludedPeriods("", 12))
+        assertFalse(InstallmentMath.hasInvalidExcludedPeriods("1-3,6", 12))
+        assertTrue(InstallmentMath.hasInvalidExcludedPeriods("0", 12))
+        assertTrue(InstallmentMath.hasInvalidExcludedPeriods("13", 12))
+        assertTrue(InstallmentMath.hasInvalidExcludedPeriods("5-3", 12))
+        assertTrue(InstallmentMath.hasInvalidExcludedPeriods("1-", 12))
+        assertTrue(InstallmentMath.hasInvalidExcludedPeriods("a", 12))
+    }
+
+    @Test
     fun `不扣资产判断_总开关与指定期数`() {
         assertFalse(InstallmentMath.excludesAsset(true, "", 12, 1))
         assertTrue(InstallmentMath.excludesAsset(false, "", 12, 1))

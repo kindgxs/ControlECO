@@ -29,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -117,6 +118,8 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     var editingParent by remember { mutableStateOf<CategoryEntity?>(null) }
     var actionTarget by remember { mutableStateOf<CategoryEntity?>(null) }
     var sortMode by remember { mutableStateOf(false) }
+    // 一级分类展开状态：二级分类默认收起，点一级分类才展开（排序模式全展开）
+    val expandedTops = remember { mutableStateMapOf<Long, Boolean>() }
     var draftIcon by remember { mutableStateOf("") }
     var sheetError by remember { mutableStateOf<String?>(null) }
     // 本次编辑里刚导入、还没保存的图片：取消时删掉，避免留孤儿文件
@@ -151,9 +154,19 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         freshImport = null
     }
 
-    // 「支出」按一级分类排序后紧跟其二级分类；预算只挂在一级分类上
-    val expenseRows = CategoryTree.flatten(categories, TxType.EXPENSE)
-    val incomeRows = CategoryTree.flatten(categories, TxType.INCOME)
+    // 「支出」按一级分类排序后紧跟其二级分类（二级默认收起）；预算只挂在一级分类上
+    fun visibleRows(type: TxType): List<CategoryEntity> =
+        CategoryTree.topLevel(categories, type).flatMap { top ->
+            val children = CategoryTree.childrenOf(categories, top.id)
+            if (children.isEmpty() || sortMode || expandedTops[top.id] == true) {
+                listOf(top) + children
+            } else {
+                listOf(top)
+            }
+        }
+
+    val expenseRows = visibleRows(TxType.EXPENSE)
+    val incomeRows = visibleRows(TxType.INCOME)
     val expenseTop = CategoryTree.topLevel(categories, TxType.EXPENSE)
     val allocatedCents = expenseTop.sumOf { budgets[it.id] ?: 0L }
 
@@ -235,13 +248,25 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         } else {
                             Column {
                                 expenseRows.forEachIndexed { index, category ->
+                                    val children = CategoryTree.childrenOf(categories, category.id)
                                     CategoryRowItem(
                                         category = category,
                                         budgetCents = budgets[category.id] ?: 0L,
                                         percentBp = budgetPercents[category.id] ?: 0,
                                         budgetMode = budgetMode,
                                         depth = if (category.parentId == null) 0 else 1,
-                                        onClick = { openEditor(category) },
+                                        expanded = if (children.isEmpty()) {
+                                            null
+                                        } else {
+                                            sortMode || expandedTops[category.id] == true
+                                        },
+                                        onClick = {
+                                            if (children.isNotEmpty() && !sortMode) {
+                                                expandedTops[category.id] = expandedTops[category.id] != true
+                                            } else {
+                                                openEditor(category)
+                                            }
+                                        },
                                         onLongClick = { actionTarget = category },
                                         onMoveUp = if (sortMode) ({ vm.moveCategory(category.id, true) }) else null,
                                         onMoveDown = if (sortMode) ({ vm.moveCategory(category.id, false) }) else null,
@@ -268,13 +293,25 @@ fun CategoriesScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         } else {
                             Column {
                                 incomeRows.forEachIndexed { index, category ->
+                                    val children = CategoryTree.childrenOf(categories, category.id)
                                     CategoryRowItem(
                                         category = category,
                                         budgetCents = budgets[category.id] ?: 0L,
                                         percentBp = budgetPercents[category.id] ?: 0,
                                         budgetMode = budgetMode,
                                         depth = if (category.parentId == null) 0 else 1,
-                                        onClick = { openEditor(category) },
+                                        expanded = if (children.isEmpty()) {
+                                            null
+                                        } else {
+                                            sortMode || expandedTops[category.id] == true
+                                        },
+                                        onClick = {
+                                            if (children.isNotEmpty() && !sortMode) {
+                                                expandedTops[category.id] = expandedTops[category.id] != true
+                                            } else {
+                                                openEditor(category)
+                                            }
+                                        },
                                         onLongClick = { actionTarget = category },
                                         onMoveUp = if (sortMode) ({ vm.moveCategory(category.id, true) }) else null,
                                         onMoveDown = if (sortMode) ({ vm.moveCategory(category.id, false) }) else null,
@@ -430,6 +467,7 @@ private fun CategoryRowItem(
     percentBp: Int,
     budgetMode: CategoryBudgetMode,
     depth: Int,
+    expanded: Boolean? = null,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onMoveUp: (() -> Unit)? = null,
@@ -469,6 +507,17 @@ private fun CategoryRowItem(
             modifier = Modifier.weight(1f),
         )
         Spacer(Modifier.width(8.dp))
+        if (expanded != null) {
+            Icon(
+                EcoIcons.ChevDown,
+                contentDescription = if (expanded) "收起二级分类" else "展开二级分类",
+                tint = c.muted,
+                modifier = Modifier
+                    .size(13.dp)
+                    .rotate(if (expanded) 0f else -90f),
+            )
+            Spacer(Modifier.width(6.dp))
+        }
         if (onMoveUp != null && onMoveDown != null) {
             // 排序模式：直接给上下移动，一级 / 二级分类都能调
             MoveArrow(up = true, onClick = onMoveUp)

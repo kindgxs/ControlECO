@@ -1680,6 +1680,36 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.i("settings", "depositGoal=${Money.formatYuan(v)}")
     }
 
+    private val _depositMonthGoals = MutableStateFlow(loadDepositMonthGoals())
+
+    /** 按月存款目标（分）：没单独设置的月份回落到 [depositGoalCents] */
+    val depositMonthGoals: StateFlow<Map<YearMonth, Long>> = _depositMonthGoals
+
+    /** 某个会计月实际生效的存款目标（分），0 = 未设置 */
+    fun depositGoalFor(month: YearMonth): Long =
+        _depositMonthGoals.value[month] ?: _depositGoalCents.value
+
+    /** 设置单月存款目标：0 = 清除该月设置，回落到默认目标 */
+    fun setDepositGoalFor(month: YearMonth, cents: Long) {
+        val v = cents.coerceAtLeast(0L)
+        val key = KEY_DEPOSIT_MONTH_GOAL_PREFIX + month
+        val editor = prefs.edit()
+        if (v > 0L) editor.putLong(key, v) else editor.remove(key)
+        editor.apply()
+        _depositMonthGoals.value = loadDepositMonthGoals()
+        AppLog.i("settings", "depositGoal[$month]=${Money.formatYuan(v)}")
+    }
+
+    private fun loadDepositMonthGoals(): Map<YearMonth, Long> =
+        prefs.all.entries.mapNotNull { (key, value) ->
+            if (!key.startsWith(KEY_DEPOSIT_MONTH_GOAL_PREFIX)) return@mapNotNull null
+            val month = runCatching {
+                YearMonth.parse(key.removePrefix(KEY_DEPOSIT_MONTH_GOAL_PREFIX))
+            }.getOrNull()
+            val cents = (value as? Long)?.takeIf { it > 0L }
+            if (month != null && cents != null) month to cents else null
+        }.toMap()
+
     /** 近 12 个会计月的账单行：存款趋势与每月新增存款的数据源 */
     @OptIn(ExperimentalCoroutinesApi::class)
     val depositRows: StateFlow<List<TransactionRow>?> = currentPeriod.flatMapLatest { period ->
@@ -1997,6 +2027,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         _categoryBudgetAmounts.value = loadCategoryBudgetAmounts()
         _categoryBudgetPercents.value = loadCategoryBudgetPercents()
         _depositGoalCents.value = prefs.getLong(KEY_DEPOSIT_GOAL, 0L)
+        _depositMonthGoals.value = loadDepositMonthGoals()
         _homeQuickAddEnabled.value = prefs.getBoolean(KEY_HOME_QUICK_ADD, true)
         _subcategoryRollupMode.value = SubcategoryRollupMode.of(prefs.getString(KEY_SUBCAT_ROLLUP, null))
     }
@@ -2034,6 +2065,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_CAT_BUDGET_MODE = "category_budget_mode"
         const val KEY_BUDGET_PLAN_PREFIX = "budget_plan_"
         const val KEY_DEPOSIT_GOAL = "deposit_goal_cents"
+        const val KEY_DEPOSIT_MONTH_GOAL_PREFIX = "deposit_goal_month_"
         const val KEY_SUBCAT_ROLLUP = "subcategory_rollup_mode"
         const val KEY_HOME_QUICK_ADD = "home_quick_add_enabled"
         const val MODE_PERCENT = "percent"

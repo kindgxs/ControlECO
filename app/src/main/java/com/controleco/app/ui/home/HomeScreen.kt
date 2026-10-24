@@ -281,6 +281,9 @@ fun HomeScreen(
     val trend = remember(periodRows, period, depositReady) {
         buildHomeTrend(periodRows.orEmpty(), period, depositReady)
     }
+    val categoryBudgetTotal = remember(categoryBudgets) {
+        categoryBudgets.values.filter { it > 0L }.sum()
+    }
 
     val monthCn = chineseMonth(period.start.monthValue)
     val monthEn = period.start.format(DateTimeFormatter.ofPattern("MMM", Locale.ENGLISH)).uppercase(Locale.ENGLISH)
@@ -355,6 +358,8 @@ fun HomeScreen(
                     1 -> if (s != null) {
                         ModeCategories(
                             totalRemaining = s.remainingCents,
+                            budgetCents = s.budgetCents,
+                            categoryBudgetCents = categoryBudgetTotal,
                             period = period,
                             today = today,
                             bars = bars,
@@ -635,15 +640,29 @@ private fun TodayCard(s: Budget.Snapshot) {
 @Composable
 private fun ModeCategories(
     totalRemaining: Long,
+    budgetCents: Long,
+    categoryBudgetCents: Long,
     period: MonthPeriod,
     today: LocalDate,
     bars: List<CategoryBarData>,
 ) {
     val c = MaterialTheme.eco
+    val allocatableCents = budgetCents - categoryBudgetCents
     Column(Modifier.fillMaxSize().padding(top = 4.dp)) {
         Row(verticalAlignment = Alignment.Bottom) {
             Column(Modifier.weight(1f)) {
-                Text("分类剩余", style = EcoType.AssetLabel.copy(fontSize = 10.sp), color = c.muted)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("分类剩余", style = EcoType.AssetLabel.copy(fontSize = 10.sp), color = c.muted)
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "分类预算 ${Money.formatYuanGroupedFixed(categoryBudgetCents)} · " +
+                            "剩余可分配 ${Money.formatYuanGroupedFixed(allocatableCents)}",
+                        style = EcoType.PageNote.copy(fontSize = 8.5.sp),
+                        color = if (allocatableCents < 0L) c.clay else c.quiet,
+                        maxLines = 1,
+                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                    )
+                }
                 Spacer(Modifier.height(5.dp))
                 EcoCountUpMoney(
                     cents = totalRemaining,
@@ -921,14 +940,19 @@ private fun ModeSpentAndDeposit(
         if (accounts.isEmpty()) {
             Text("还没有账户", style = EcoType.PageNote, color = c.muted)
         } else {
+            // 同一共用额度组的卡（同银行多卡共用欠款）只显示一张：流水同步、资产也只算一次
+            val visibleAccounts = remember(accounts, snapshots) {
+                val byId = accounts.associateBy { it.id }
+                AssetMath.visibleAccountIds(snapshots).mapNotNull { byId[it] }
+            }
             EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp)) {
                 Column(Modifier.fillMaxWidth()) {
-                    accounts.forEachIndexed { index, account ->
+                    visibleAccounts.forEachIndexed { index, account ->
                         val bal = balances.firstOrNull { it.accountId == account.id }
                         val cents = (bal?.initialBalanceCents ?: account.initialBalanceCents) +
                             (displayFlows[account.id] ?: bal?.signedSumCents ?: 0L)
                         AssetAccountRow(name = account.name, cents = cents)
-                        if (index != accounts.lastIndex) {
+                        if (index != visibleAccounts.lastIndex) {
                             Box(
                                 Modifier
                                     .fillMaxWidth()

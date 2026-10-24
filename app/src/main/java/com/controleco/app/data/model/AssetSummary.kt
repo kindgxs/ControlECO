@@ -58,6 +58,14 @@ object AssetMath {
             members.map { it.id to flow }
         }.toMap()
 
+    /** 账户列表要展示哪些卡：共用额度组只留第一张（组内余额已经只算一次） */
+    fun visibleAccountIds(accounts: List<AssetAccountSnapshot>): List<Long> {
+        val seenGroups = HashSet<Long>()
+        return accounts
+            .filter { it.sharedGroupId == 0L || seenGroups.add(it.sharedGroupId) }
+            .map { it.id }
+    }
+
     /** 组 key：共用组用组 id，独立账户用负 id（避免与组 id 撞） */
     private fun groupKeyOf(account: AssetAccountSnapshot): Long =
         if (account.sharedGroupId != 0L) account.sharedGroupId else -account.id

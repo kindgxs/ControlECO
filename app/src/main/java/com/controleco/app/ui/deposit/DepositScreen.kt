@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -31,6 +32,7 @@ import com.controleco.app.data.deposit.DepositMath
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.eco.EcoAutoMoney
 import com.controleco.app.ui.eco.EcoEmpty
+import com.controleco.app.ui.eco.EcoGhostButton
 import com.controleco.app.ui.eco.EcoMoneyField
 import com.controleco.app.ui.eco.EcoPageNote
 import com.controleco.app.ui.eco.EcoPane
@@ -39,12 +41,15 @@ import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoProgressBar
 import com.controleco.app.ui.eco.EcoSectionHead
+import com.controleco.app.ui.eco.EcoSheet
 import com.controleco.app.ui.eco.EcoToast
 import com.controleco.app.ui.eco.EcoTopBar
 import com.controleco.app.ui.eco.ecoBottomContentPadding
+import com.controleco.app.ui.eco.ecoPressable
 import com.controleco.app.ui.theme.EcoType
 import com.controleco.app.ui.theme.eco
 import com.controleco.app.util.Money
+import java.time.YearMonth
 import kotlin.math.roundToInt
 
 /**
@@ -58,9 +63,13 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val trend = trendState ?: return
     val current by vm.currentMonthSaving.collectAsStateWithLifecycle()
     val goal by vm.depositGoalCents.collectAsStateWithLifecycle()
+    val monthGoals by vm.depositMonthGoals.collectAsStateWithLifecycle()
     var goalText by remember(goal) {
         mutableStateOf(if (goal > 0L) Money.formatCents(goal) else "")
     }
+    var editingMonth by remember { mutableStateOf<YearMonth?>(null) }
+    var monthGoalText by remember { mutableStateOf("") }
+    fun goalOf(month: YearMonth): Long = monthGoals[month] ?: goal
 
     Column(Modifier.fillMaxSize()) {
         EcoTopBar(
@@ -81,18 +90,18 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             item(key = "current") {
                 CurrentSavingCard(
                     current = current,
-                    goalCents = goal,
+                    goalCents = current?.month?.let { goalOf(it) } ?: goal,
                 )
             }
             item(key = "goal") {
                 EcoPane(Modifier.fillMaxWidth(), shape = RoundedCornerShape(19.dp)) {
                     Column(Modifier.fillMaxWidth().padding(16.dp)) {
                         EcoMoneyField(
-                            label = "每月存款目标",
+                            label = "默认每月存款目标",
                             value = goalText,
                             onValueChange = { goalText = it },
                             placeholder = "0.00",
-                            supporting = "目标用于计算每月的存款达成比例，留空 = 不设目标",
+                            supporting = "没单独设置的月份都用这个目标；在下方每月卡片里可以设不同金额，留空 = 不设目标",
                         )
                         Spacer(Modifier.height(10.dp))
                         EcoPrimaryButton(
@@ -133,7 +142,17 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 // 新的月份在上
                 trend.reversed().forEachIndexed { index, month ->
                     item(key = "month-${month.month}") {
-                        MonthSavingCard(month = month, goalCents = goal)
+                        MonthSavingCard(
+                            month = month,
+                            goalCents = goalOf(month.month),
+                            custom = monthGoals.containsKey(month.month),
+                            onSetGoal = {
+                                editingMonth = month.month
+                                monthGoalText = goalOf(month.month).takeIf { it > 0L }
+                                    ?.let { Money.formatCents(it) }
+                                    ?: ""
+                            },
+                        )
                     }
                     if (index != trend.lastIndex) {
                         item(key = "gap-${month.month}") { Spacer(Modifier.height(2.dp)) }
@@ -144,8 +163,55 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             item(key = "note") {
                 EcoPageNote(
                     "当月实际新增存款 = 当月收入 − 当月支出（已退款的支出不计入）。" +
-                        "目标达成比例 = 当月新增存款 ÷ 存款目标。",
+                        "目标达成比例 = 当月新增存款 ÷ 存款目标；每月可设不同目标，未设置的月份用默认目标。",
                 )
+            }
+        }
+    }
+
+    // 单月目标编辑（每月存款可以设不同金额）
+    editingMonth?.let { month ->
+        EcoSheet(
+            onDismiss = { editingMonth = null },
+            title = "${month.year} 年 ${month.monthValue} 月存款目标",
+            subtitle = "只影响这一个月的达成比例",
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)) {
+                EcoMoneyField(
+                    label = "本月目标",
+                    value = monthGoalText,
+                    onValueChange = { monthGoalText = it },
+                    placeholder = "0.00",
+                    supporting = "留空 = 无目标；清除后回落到默认目标 ${if (goal > 0L) Money.formatYuanGroupedFixed(goal) else "（未设）"}",
+                )
+                Spacer(Modifier.height(12.dp))
+                EcoPrimaryButton(
+                    text = "保存本月目标",
+                    onClick = {
+                        val text = monthGoalText.trim()
+                        val cents = text.takeIf { it.isNotBlank() }?.let { Money.parseCents(it) }
+                        if (text.isNotBlank() && cents == null) {
+                            EcoToast.show("目标金额格式不正确", EcoPillTone.Bad)
+                            return@EcoPrimaryButton
+                        }
+                        vm.setDepositGoalFor(month, cents ?: 0L)
+                        editingMonth = null
+                        EcoToast.show("已保存 ${month.monthValue} 月目标")
+                    },
+                )
+                if (monthGoals.containsKey(month)) {
+                    Spacer(Modifier.height(8.dp))
+                    EcoGhostButton(
+                        text = "用默认目标（清除本月设置）",
+                        onClick = {
+                            vm.setDepositGoalFor(month, 0L)
+                            editingMonth = null
+                            EcoToast.show("已恢复默认目标")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
             }
         }
     }
@@ -200,9 +266,14 @@ private fun CurrentSavingCard(current: DepositMath.MonthSaving?, goalCents: Long
     }
 }
 
-/** 单月存款卡：月份 / 新增金额 / 达成比例 / 进度轨 */
+/** 单月存款卡：月份 / 新增金额 / 达成比例 / 目标进度（点「目标」可改这个月的金额） */
 @Composable
-private fun MonthSavingCard(month: DepositMath.MonthSaving, goalCents: Long) {
+private fun MonthSavingCard(
+    month: DepositMath.MonthSaving,
+    goalCents: Long,
+    custom: Boolean,
+    onSetGoal: () -> Unit,
+) {
     val c = MaterialTheme.eco
     val saving = month.savingCents
     val ratio = month.ratio(goalCents)
@@ -216,12 +287,30 @@ private fun MonthSavingCard(month: DepositMath.MonthSaving, goalCents: Long) {
                         color = c.ink,
                     )
                     Spacer(Modifier.height(2.dp))
-                    Text(
-                        "收入 ${Money.formatYuanGrouped(month.incomeCents)} · 支出 ${Money.formatYuanGrouped(month.expenseCents)}",
-                        style = EcoType.PageNote.copy(fontSize = 8.5.sp),
-                        color = c.quiet,
-                        maxLines = 1,
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "收入 ${Money.formatYuanGrouped(month.incomeCents)} · 支出 ${Money.formatYuanGrouped(month.expenseCents)}",
+                            style = EcoType.PageNote.copy(fontSize = 8.5.sp),
+                            color = c.quiet,
+                            maxLines = 1,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            if (goalCents > 0L) {
+                                if (custom) "目标 ${Money.formatYuanGrouped(goalCents)}" else "目标 ${Money.formatYuanGrouped(goalCents)}（默认）"
+                            } else {
+                                "设目标"
+                            },
+                            style = EcoType.PageNote.copy(fontSize = 8.5.sp),
+                            color = c.blueDeep,
+                            maxLines = 1,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .ecoPressable(scaleTo = 0.96f, onClick = onSetGoal)
+                                .padding(horizontal = 3.dp, vertical = 2.dp),
+                        )
+                    }
                 }
                 Text(
                     Money.formatYuanGrouped(saving),

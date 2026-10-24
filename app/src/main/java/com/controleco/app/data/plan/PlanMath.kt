@@ -96,18 +96,85 @@ object InstallmentMath {
         return index
     }
 
-    /** 解析「不扣资产的期数」文本（"1,3,12"）：非法/越界项直接忽略 */
+    /**
+     * 解析「不扣资产的期数」文本：既支持单期，也支持区间。
+     *
+     * 例：`1,3,12`、`1-3`、`1-3,6`、`1-3,5-7`。
+     * 逗号支持中英文；区间用 `-`、`~` 或全角 `－`。非法 / 越界项直接忽略。
+     */
     fun parseExcludedPeriods(text: String?, periods: Int): Set<Int> {
         if (text.isNullOrBlank() || periods <= 0) return emptySet()
-        return text.split(',')
-            .mapNotNull { it.trim().toIntOrNull() }
-            .filter { it in 1..periods }
-            .toSet()
+        val result = LinkedHashSet<Int>()
+        text.replace('，', ',').replace('－', '-').replace('~', '-')
+            .split(',')
+            .forEach { token ->
+                val part = token.trim()
+                if (part.isEmpty()) return@forEach
+                val dash = part.indexOf('-')
+                if (dash < 0) {
+                    part.toIntOrNull()?.takeIf { it in 1..periods }?.let { result += it }
+                } else {
+                    val from = part.substring(0, dash).trim().toIntOrNull() ?: return@forEach
+                    val to = part.substring(dash + 1).trim().toIntOrNull() ?: return@forEach
+                    if (from <= to) {
+                        (from.coerceAtLeast(1)..to.coerceAtMost(periods)).forEach { result += it }
+                    }
+                }
+            }
+        return result
     }
 
-    /** 把期数集合编码成存储文本（升序、逗号分隔） */
-    fun encodeExcludedPeriods(periodsSet: Set<Int>, periods: Int): String =
-        periodsSet.filter { it in 1..periods }.sorted().joinToString(",")
+    /**
+     * 把期数集合编码成存储文本：连续 3 期以上压成区间（`1-3,6`），其余逗号分隔。
+     * 这样与 [parseExcludedPeriods] 完全互逆，输入 `1,2,3` 也会存成 `1-3`。
+     */
+    fun encodeExcludedPeriods(periodsSet: Set<Int>, periods: Int): String {
+        val sorted = periodsSet.filter { it in 1..periods }.distinct().sorted()
+        if (sorted.isEmpty()) return ""
+        val out = ArrayList<String>()
+        var start = sorted.first()
+        var prev = start
+        sorted.drop(1).forEach { value ->
+            if (value == prev + 1) {
+                prev = value
+            } else {
+                out += mergeRange(start, prev)
+                start = value
+                prev = value
+            }
+        }
+        out += mergeRange(start, prev)
+        return out.joinToString(",")
+    }
+
+    /** 单期 → "3"；两期 → "3,4"；三期及以上 → "3-5" */
+    private fun mergeRange(from: Int, to: Int): String = when {
+        to - from >= 2 -> "$from-$to"
+        from == to -> "$from"
+        else -> "$from,$to"
+    }
+
+    /** 文本里是否含有无法解析的片段（UI 校验用；空文本视为合法） */
+    fun hasInvalidExcludedPeriods(text: String?, periods: Int): Boolean {
+        if (text.isNullOrBlank() || periods <= 0) return false
+        return text.replace('，', ',').replace('－', '-').replace('~', '-')
+            .split(',')
+            .any { token ->
+                val part = token.trim()
+                if (part.isEmpty()) {
+                    false
+                } else {
+                    val dash = part.indexOf('-')
+                    if (dash < 0) {
+                        part.toIntOrNull()?.let { it in 1..periods } != true
+                    } else {
+                        val from = part.substring(0, dash).trim().toIntOrNull()
+                        val to = part.substring(dash + 1).trim().toIntOrNull()
+                        from == null || to == null || from > to || from < 1 || to > periods
+                    }
+                }
+            }
+    }
 
     /** 该期是否「只记账、不扣资产」：整体开关关闭，或该期被单独指定 */
     fun excludesAsset(deductAsset: Boolean, excludePeriodsText: String?, periods: Int, index: Int): Boolean =

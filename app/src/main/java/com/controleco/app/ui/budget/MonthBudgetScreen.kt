@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.budget.Budget
@@ -132,6 +133,13 @@ private fun MonthBudgetForm(
             categoryTexts[id] = plan?.amountOf(id)?.takeIf { it > 0L }?.let { Money.formatCents(it) } ?: ""
         }
     }
+    val c = MaterialTheme.eco
+    // 实时小字：分类预算合计 + 总预算中还能分给分类的剩余
+    val categoryTotalCents = expenseTop.sumOf { (id, _) ->
+        categoryTexts[id].orEmpty().takeIf { it.isNotBlank() }?.let { Money.parseCents(it) } ?: 0L
+    }
+    val effectiveTotalCents = totalText.takeIf { it.isNotBlank() }?.let { Money.parseCents(it) } ?: globalFallbackCents
+    val allocatableCents = effectiveTotalCents - categoryTotalCents
 
     LazyColumn(
         Modifier.fillMaxSize(),
@@ -183,6 +191,22 @@ private fun MonthBudgetForm(
                             "留空 = 沿用全局月预算（当前未设置）"
                         },
                     )
+                    Spacer(Modifier.height(7.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "分类预算总额 ${Money.formatYuanGroupedFixed(categoryTotalCents)}",
+                            style = EcoType.PageNote.copy(fontSize = 9.sp),
+                            color = c.quiet,
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Text(
+                            "剩余可分配 ${Money.formatYuanGroupedFixed(allocatableCents)}",
+                            style = EcoType.PageNote.copy(fontSize = 9.sp),
+                            color = if (allocatableCents < 0L) c.clay else c.muted,
+                            maxLines = 1,
+                        )
+                    }
                 }
             }
         }

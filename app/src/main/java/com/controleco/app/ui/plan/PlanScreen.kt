@@ -31,6 +31,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.db.AccountEntity
 import com.controleco.app.data.db.CategoryEntity
@@ -300,7 +301,9 @@ private fun InstallmentCard(
                         } else {
                             val excluded = InstallmentMath.parseExcludedPeriods(plan.excludeAssetPeriods, plan.periods)
                             if (excluded.isNotEmpty()) {
-                                append(" · 第 ").append(excluded.sorted().joinToString(",")).append(" 期不扣资产")
+                                append(" · 第 ")
+                                append(InstallmentMath.encodeExcludedPeriods(excluded, plan.periods))
+                                append(" 期不扣资产")
                             }
                         }
                     },
@@ -467,10 +470,15 @@ private fun AccountCategoryFields(
     onAccount: (Long) -> Unit,
     onCategory: (Long) -> Unit,
 ) {
-    val topLevel = categories.filter { it.type == type && it.parentId == null }
-    val selectedCategory = categories.firstOrNull { it.id == categoryId }
-    val parentId = selectedCategory?.parentId ?: selectedCategory?.id ?: 0L
-    val children = categories.filter { it.parentId == parentId }
+    // 分类下拉同时列出一级分类与它下面的二级分类，选哪一级都能直接落库
+    val categoryOptions = remember(categories, type) {
+        CategoryTree.topLevel(categories, type).flatMap { top ->
+            listOf(top.id to top.name) +
+                CategoryTree.childrenOf(categories, top.id).map { child ->
+                    child.id to "${top.name} / ${child.name}"
+                }
+        }
+    }
 
     TxSelectField(
         value = accounts.firstOrNull { it.id == accountId }?.name.orEmpty(),
@@ -481,20 +489,18 @@ private fun AccountCategoryFields(
     )
     Spacer(Modifier.height(12.dp))
     TxSelectField(
-        value = topLevel.firstOrNull { it.id == parentId }?.name.orEmpty(),
-        options = topLevel.map { it.id to it.name },
-        onSelect = { id -> onCategory(id) },
-        label = "一级分类",
-        placeholder = "选择一级分类",
+        value = CategoryTree.displayName(categories, categoryId),
+        options = categoryOptions,
+        onSelect = onCategory,
+        label = "分类",
+        placeholder = "选择一级 / 二级分类",
     )
-    if (children.isNotEmpty()) {
-        Spacer(Modifier.height(12.dp))
-        TxSelectField(
-            value = selectedCategory?.takeIf { it.parentId != null }?.name.orEmpty(),
-            options = listOf(0L to "不选二级分类") + children.map { it.id to it.name },
-            onSelect = { id -> onCategory(if (id <= 0L) parentId else id) },
-            label = "二级分类",
-            placeholder = "不选二级分类",
+    if (categoryOptions.any { (id, _) -> categories.firstOrNull { it.id == id }?.parentId != null }) {
+        Spacer(Modifier.height(5.dp))
+        Text(
+            "带「/」的是二级分类，只计入所属一级分类的预算与统计",
+            style = EcoType.PageNote,
+            color = MaterialTheme.eco.quiet,
         )
     }
 }
@@ -588,9 +594,15 @@ private fun InstallmentEditorSheet(
                 EcoField(
                     label = "指定不扣资产的期数",
                     value = excludePeriodsText,
-                    onValueChange = { excludePeriodsText = it.filter { ch -> ch.isDigit() || ch == ',' }; localError = null },
-                    placeholder = "例如 1,3,12（留空 = 每期都扣资产）",
-                    supporting = "逗号分隔；这些期入账时只记账、不改变账户余额",
+                    onValueChange = {
+                        excludePeriodsText = it.filter { ch ->
+                            ch.isDigit() || ch == ',' || ch == '-' || ch == '，' ||
+                                ch == '－' || ch == '~'
+                        }
+                        localError = null
+                    },
+                    placeholder = "例如 1-3,6（留空 = 每期都扣资产）",
+                    supporting = "支持单期与区间：1,3,12 或 1-3,6",
                 )
             }
 
@@ -615,15 +627,14 @@ private fun InstallmentEditorSheet(
                 text = "保存",
                 onClick = {
                     val excludeSet = InstallmentMath.parseExcludedPeriods(excludePeriodsText, periods)
-                    val excludeTokens = excludePeriodsText.split(',').map { it.trim() }.filter { it.isNotEmpty() }
-                    val excludeInvalid = excludeTokens.any { it.toIntOrNull()?.let { n -> n in 1..periods } != true }
+                    val excludeInvalid = InstallmentMath.hasInvalidExcludedPeriods(excludePeriodsText, periods)
                     when {
                         title.isBlank() -> localError = "请输入名称"
                         principal <= 0L -> localError = "请输入总本金"
                         periods !in InstallmentMath.MIN_PERIODS..InstallmentMath.MAX_PERIODS ->
                             localError = "期数需在 1~${InstallmentMath.MAX_PERIODS} 之间"
                         deduct && excludeInvalid ->
-                            localError = "不扣资产的期数需在 1~$periods 之间，用逗号分隔"
+                            localError = "不扣资产的期数需在 1~$periods 之间，可写 1-3,6"
                         accountId <= 0L -> localError = "请选择账户"
                         categoryId <= 0L -> localError = "请选择分类"
                         else -> onSave(

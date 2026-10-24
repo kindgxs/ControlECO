@@ -134,49 +134,61 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 .padding(horizontal = 16.dp)
                 .fillMaxWidth(),
         ) {
-            // 星期抬头
-            Row(Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 4.dp)) {
-                WeekLabels.forEach {
-                    Text(
-                        it,
-                        style = EcoType.Micro,
-                        color = c.quiet,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier.weight(1f),
-                    )
+            // EcoPane 的内容容器是 Box：多个子项会叠在一起，日历必须自己用 Column 竖排
+            Column(Modifier.fillMaxWidth()) {
+                // 星期抬头
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(26.dp)
+                        .padding(start = 6.dp, end = 6.dp, top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    WeekLabels.forEach {
+                        Text(
+                            it,
+                            style = EcoType.Micro,
+                            color = c.quiet,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
                 }
-            }
-            // 日期格子
-            val first = month.atDay(1)
-            val offset = first.dayOfWeek.value - 1
-            val days = month.lengthOfMonth()
-            val cells = offset + days
-            val weeks = (cells + 6) / 7
-            Column(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 4.dp)) {
-                repeat(weeks) { week ->
-                    Row(Modifier.fillMaxWidth()) {
-                        repeat(7) { col ->
-                            val index = week * 7 + col
-                            val dayNumber = index - offset + 1
-                            if (dayNumber in 1..days) {
-                                val date = month.atDay(dayNumber)
-                                DayCell(
-                                    date = date,
-                                    money = byDay[date],
-                                    mode = currentMode,
-                                    selected = date == selected,
-                                    isToday = date == LocalDate.now(),
-                                    onClick = { selectedDate = date.toString() },
-                                    modifier = Modifier.weight(1f),
-                                )
-                            } else {
-                                Spacer(Modifier.weight(1f).height(58.dp))
+                // 日期格子
+                val first = month.atDay(1)
+                val offset = first.dayOfWeek.value - 1
+                val days = month.lengthOfMonth()
+                val cells = offset + days
+                val weeks = (cells + 6) / 7
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 6.dp, end = 6.dp, top = 2.dp, bottom = 6.dp),
+                ) {
+                    repeat(weeks) { week ->
+                        Row(Modifier.fillMaxWidth()) {
+                            repeat(7) { col ->
+                                val index = week * 7 + col
+                                val dayNumber = index - offset + 1
+                                if (dayNumber in 1..days) {
+                                    val date = month.atDay(dayNumber)
+                                    DayCell(
+                                        date = date,
+                                        money = byDay[date],
+                                        mode = currentMode,
+                                        selected = date == selected,
+                                        isToday = date == LocalDate.now(),
+                                        onClick = { selectedDate = date.toString() },
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                } else {
+                                    Spacer(Modifier.weight(1f).height(58.dp))
+                                }
                             }
                         }
                     }
                 }
             }
-            Spacer(Modifier.height(6.dp))
         }
 
         // 显示口径
@@ -186,7 +198,7 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             onSelect = { mode = it },
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             small = true,
         )
 
@@ -195,7 +207,7 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             Modifier
                 .padding(horizontal = 16.dp)
                 .fillMaxWidth(),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 12.dp),
+            contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 10.dp),
         ) {
             Row(Modifier.fillMaxWidth()) {
                 MonthTotal("月收入", Money.formatYuanCompact(totals.incomeCents), c.jade)
@@ -206,7 +218,7 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
 
         // 当天明细
         Row(
-            Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 22.dp, bottom = 8.dp),
+            Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 14.dp, bottom = 6.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
             Text(
@@ -222,12 +234,15 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 .padding(horizontal = 16.dp)
                 .fillMaxWidth(),
         ) {
-            if (dayRows.isEmpty()) {
-                EcoEmpty(title = "当天没有账单", icon = EcoIcons.Calendar)
-            } else {
-                dayRows.forEachIndexed { index, row ->
-                    if (index > 0) EcoRowDivider()
-                    DayRow(row = row, categoryName = row.categoryName, parentName = categoryById[row.categoryId]?.parentId?.let { categoryById[it]?.name })
+            // 同样要 Column 竖排，否则多条账单会全部叠在卡片顶部
+            Column(Modifier.fillMaxWidth()) {
+                if (dayRows.isEmpty()) {
+                    EcoEmpty(title = "当天没有账单", icon = EcoIcons.Calendar)
+                } else {
+                    dayRows.forEachIndexed { index, row ->
+                        if (index > 0) EcoRowDivider()
+                        DayRow(row = row, categoryName = row.categoryName, parentName = categoryById[row.categoryId]?.parentId?.let { categoryById[it]?.name })
+                    }
                 }
             }
         }
@@ -311,8 +326,8 @@ private fun DayAmount(text: String, color: androidx.compose.ui.graphics.Color) {
 private fun androidx.compose.foundation.layout.RowScope.MonthTotal(label: String, value: String, color: androidx.compose.ui.graphics.Color) {
     Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(label, style = EcoType.Micro, color = MaterialTheme.eco.quiet)
-        Spacer(Modifier.height(3.dp))
-        Text(value, style = EcoType.RowTitle, color = color, maxLines = 1)
+        Spacer(Modifier.height(2.dp))
+        Text(value, style = EcoType.RowTitle.copy(fontSize = 11.5.sp), color = color, maxLines = 1)
     }
 }
 

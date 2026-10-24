@@ -43,4 +43,17 @@ class AssetMathTest {
         assertEquals(-150_000L, flows[2])
         assertEquals(20_000L, flows[3])
     }
+
+    @Test
+    fun `共用额度组_资产列表只显示一张卡`() {
+        val accounts = listOf(
+            AssetAccountSnapshot(id = 1, sharedGroupId = 7, initialBalanceCents = 0, flowCents = -100_000),
+            AssetAccountSnapshot(id = 2, sharedGroupId = 7, initialBalanceCents = 0, flowCents = -50_000),
+            AssetAccountSnapshot(id = 3, sharedGroupId = 0, initialBalanceCents = 0, flowCents = 20_000),
+            AssetAccountSnapshot(id = 4, sharedGroupId = 8, initialBalanceCents = 0, flowCents = 0),
+            AssetAccountSnapshot(id = 5, sharedGroupId = 8, initialBalanceCents = 0, flowCents = 0),
+            AssetAccountSnapshot(id = 6, sharedGroupId = 0, initialBalanceCents = 0, flowCents = 0),
+        )
+        assertEquals(listOf(1L, 3L, 4L, 6L), AssetMath.visibleAccountIds(accounts))
+    }
 }
