@@ -1412,15 +1412,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     fun showOverlayTest(delayMs: Long = 0, onResult: (String) -> Unit) =
         CaptureCenter.showOverlayTest(delayMs, onResult)
 
-    private val _autoUpdateEnabled = MutableStateFlow(AppUpdate.isAutoUpdateEnabled(getApplication()))
-    val autoUpdateEnabled: StateFlow<Boolean> = _autoUpdateEnabled
-
-    fun setAutoUpdateEnabled(enabled: Boolean) {
-        AppUpdate.setAutoUpdateEnabled(getApplication(), enabled)
-        _autoUpdateEnabled.value = enabled
-    }
-
-    /** 手动检查更新（设置页「检查更新」）：无视开关与间隔；发现新版本走全局弹窗，无更新/失败经回调提示 */
+    /** 手动检查更新（设置页「检查更新」）：发现新版本走全局提示框（只提示、跳转原仓库 Release），无更新/失败经回调提示 */
     fun checkUpdateNow(onResult: (String?) -> Unit) = AppUpdate.checkNow(getApplication(), onResult)
 
     /** 通知权限（安卓 13+ 运行时） */

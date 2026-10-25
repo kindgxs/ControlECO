@@ -18,11 +18,8 @@
     <!-- 悬浮确认卡：在支付页上方弹出预填确认卡片（底部卡，用户在设置里单独授权；未授权自动回落通知） -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
 
-    <!-- 自动更新：启动时查 GitHub Release 最新版；确认更新后应用内下载 APK 并拉起系统安装（只读不上传） -->
+    <!-- 检查更新：设置页手动查 GitHub Release 最新版，仅提示并跳转原仓库 Release 页面（只读不上传） -->
     <uses-permission android:name="android.permission.INTERNET" />
-
-    <!-- 应用内更新：确认后由应用下载 APK 并调起系统安装器（安装前系统会再弹确认，用户可拒） -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- 分期/周期到点自动入账：精确闹钟（Android 12+ 未授权时自动回落到普通闹钟）；开机后重挂 -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
@@ -96,17 +93,6 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
-
-        <!-- 应用内更新：把下载的 APK 通过 content:// 交给系统安装器（不导出、按需授权） -->
-        <provider
-            android:name="androidx.core.content.FileProvider"
-            android:authorities="${applicationId}.fileprovider"
-            android:exported="false"
-            android:grantUriPermissions="true">
-            <meta-data
-                android:name="android.support.FILE_PROVIDER_PATHS"
-                android:resource="@xml/file_paths" />
-        </provider>
 
         <!-- 阶段二：通知监听采集（用户在系统设置授予"通知使用权"后由系统绑定） -->
         <service
