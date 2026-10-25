@@ -83,7 +83,7 @@ private val HERO_SIGNAL: Color
  * （自动记账 / 系统 / 关于），底部 `NO CLOUD · LOCAL ONLY`。
  *
  * 入口一个不少：三个入账方式开关、待确认账单、监听的 App、商户归类、保活与自启动、权限
- * （含通知监听 / 无障碍 / 悬浮窗 / 短信的汇总胶囊）、自动更新、检查更新、开发者功能（内含
+ * （含通知监听 / 无障碍 / 悬浮窗 / 短信的汇总胶囊）、检查更新、开发者功能（内含
  * 捕获日志、溯源）、关于与版本。账本（账户 / 账单导入）入口仍在个人页，不在此页重复。
  */
 @Composable
@@ -116,7 +116,6 @@ fun SettingsScreen(
     val captureNotify by vm.captureNotifyEnabled.collectAsStateWithLifecycle()
     val overlayConfirm by vm.overlayConfirmEnabled.collectAsStateWithLifecycle()
     val autoEntry by vm.autoEntryEnabled.collectAsStateWithLifecycle()
-    val autoUpdate by vm.autoUpdateEnabled.collectAsStateWithLifecycle()
     val captureEnabled by vm.captureEnabled.collectAsStateWithLifecycle()
     val lastCaptureAt by vm.lastCaptureAt.collectAsStateWithLifecycle()
     val pendingCount by vm.pendingCount.collectAsStateWithLifecycle()
@@ -246,12 +245,6 @@ fun SettingsScreen(
                 onCheckedChange = { AnimationPrefs.set(context, it) },
             )
             SettingsDivider()
-            SettingsSwitchRow(
-                title = "自动更新",
-                checked = autoUpdate,
-                onCheckedChange = { vm.setAutoUpdateEnabled(it) },
-            )
-            SettingsDivider()
             SettingsRow(
                 title = "检查更新",
                 icon = EcoIcons.Download,
@@ -261,7 +254,7 @@ fun SettingsScreen(
                     EcoToast.show("正在检查更新…", EcoPillTone.Blue)
                     vm.checkUpdateNow { message ->
                         if (message == null) {
-                            EcoToast.show("发现新版本，正在打开更新…", EcoPillTone.Blue)
+                            EcoToast.show("发现新版本，正在打开发布页…", EcoPillTone.Blue)
                         } else {
                             EcoToast.show(
                                 message,

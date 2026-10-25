@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,26 +7,47 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+// 独立签名材料（不入库）：存在时用新密钥签名，缺失时回落到 debug 签名
+val keystorePropsFile = rootProject.file("signing/keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+
 android {
     namespace = "com.controleco.app"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.controleco.app"
+        // 与原版 com.controleco.app 不同的包名，系统才会允许两个应用并存安装
+        applicationId = "com.controleco.app.merged"
         minSdk = 26
         targetSdk = 35
         // 每次带修改的构建把第三位 +1；1.0.0 起为正式版本，版本名不再带 -beta 后缀
         versionCode = 38
-        versionName = "1.0.3"
+        versionName = "1.0.3-merged"
+    }
+
+    signingConfigs {
+        create("mergedRelease") {
+            if (keystorePropsFile.exists()) {
+                storeFile = rootProject.file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // 正式版仍沿用 debug 密钥签名：与既有侧载包同一签名，可直接覆盖安装、不清数据。
-            // 换成独立发布密钥需要用户先卸载（账本会一起没），1.0.0 不做。
-            signingConfig = signingConfigs.getByName("debug")
+            // 合并版用独立包名 + 独立密钥，可与原版同时安装；缺少签名材料时回落 debug 密钥
+            signingConfig = if (keystorePropsFile.exists()) {
+                signingConfigs.getByName("mergedRelease")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {

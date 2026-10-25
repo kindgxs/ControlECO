@@ -235,6 +235,14 @@ object InstallmentMath {
     fun excludesAssetAt(deductAsset: Boolean, excludePeriodsText: String?, index: Int): Boolean =
         !deductAsset || index in parseExcludedIndexes(excludePeriodsText)
 
+    /** 分期第 index 期是否不计入账单和收支统计 */
+    fun excludesStats(excludePeriodsText: String?, periods: Int, index: Int): Boolean =
+        index in parseExcludedPeriods(excludePeriodsText, periods)
+
+    /** 周期记账第 index 次是否不计入账单和收支统计 */
+    fun excludesStatsAt(excludePeriodsText: String?, index: Int): Boolean =
+        index in parseExcludedIndexes(excludePeriodsText)
+
     const val MAX_PERIOD_INDEX = 10_000
 }
 

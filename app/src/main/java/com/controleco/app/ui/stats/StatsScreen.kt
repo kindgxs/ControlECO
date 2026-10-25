@@ -146,12 +146,14 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
         month.year == currentAccountingMonth.year
     }
 
-    // 柱状图数据：月视角每日一根、年视角每月一根（月视角按会计月分桶）
-    val bars = remember(rowsReady, month, mode, monthStartDay) {
+    // 柱状图数据：月视角每日一根、年视角每月一根（月视角按会计月分桶）；
+    // 只统计「计入账单和收支统计」的记录
+    val statsRows = remember(rowsReady) { rowsReady.filter { !it.excludeFromStats } }
+    val bars = remember(statsRows, month, mode, monthStartDay) {
         if (mode == PeriodMode.MONTH) {
-            ChartMath.monthBars(rowsReady, month, monthStartDay)
+            ChartMath.monthBars(statsRows, month, monthStartDay)
         } else {
-            ChartMath.yearBars(rowsReady, month)
+            ChartMath.yearBars(statsRows, month)
         }
     }
     // 柱状图入场进度**由页面持有**：`ExpenseBarChart` 是 LazyColumn 的一个 item，滑出屏幕就被销毁，

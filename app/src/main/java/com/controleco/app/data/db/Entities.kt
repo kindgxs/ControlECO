@@ -121,6 +121,9 @@ data class TransactionEntity(
     /** 只记账、不扣资产（分期/周期记账的「已记期数」可选）：余额统计跳过该笔 */
     @ColumnInfo(defaultValue = "0")
     val excludeFromAssets: Boolean = false,
+    /** 不计入账单和收支统计：账单列表仍显示，但收入/支出汇总、分类占比、日历等统计跳过该笔 */
+    @ColumnInfo(defaultValue = "0")
+    val excludeFromStats: Boolean = false,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
@@ -144,6 +147,9 @@ data class InstallmentPlanEntity(
     /** 单独指定「只记账、不扣资产」的期数：逗号分隔（例 "1,3,12"）；空 = 只按 deductAsset */
     @ColumnInfo(defaultValue = "")
     val excludeAssetPeriods: String = "",
+    /** 单独指定「不计入账单和收支统计」的期数（与上同格式）；空 = 全部计入 */
+    @ColumnInfo(defaultValue = "")
+    val excludeStatsPeriods: String = "",
     /** 出账时间（当天 0 点起的分钟数，默认 09:00）：到点才自动入账 */
     @ColumnInfo(defaultValue = "540")
     val postTimeMinutes: Int = 540,
@@ -193,6 +199,9 @@ data class RecurringPlanEntity(
     /** 单独指定「只记账、不扣资产」的次数（与分期同格式：1,3,12 或 1-3,6） */
     @ColumnInfo(defaultValue = "")
     val excludeAssetPeriods: String = "",
+    /** 单独指定「不计入账单和收支统计」的次数（与上同格式）；空 = 全部计入 */
+    @ColumnInfo(defaultValue = "")
+    val excludeStatsPeriods: String = "",
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
 )

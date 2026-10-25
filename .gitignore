@@ -25,3 +25,9 @@ docs/book/
 
 # 本地 Gradle 用户目录（native-platform / 依赖缓存，不入库）
 /.gradle-home/
+
+# 合并版独立签名材料（密钥与口令，禁止入库）
+/signing/
+
+# 打包产物（分发的 APK，不入库）
+/dist/

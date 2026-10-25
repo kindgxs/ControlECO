@@ -7,8 +7,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * 自动更新的纯函数部分：release JSON 解析（真实 API 返回结构）与版本比较。
- * 网络部分（直连/镜像切换）不做单测，靠真机日志核对。
+ * 更新检查的纯函数部分：release JSON 解析（真实 API 返回结构）与版本比较。
+ * 应用只提示新版本并跳转原仓库 Release 页面，网络部分不做单测，靠真机日志核对。
  */
 class AppUpdateTest {
 
@@ -25,10 +25,6 @@ class AppUpdateTest {
               {
                 "name": "ControlECO-0.4.6-beta.apk",
                 "browser_download_url": "https://github.com/ArrogHie/ControlECO/releases/download/v0.4.6-beta/ControlECO-0.4.6-beta.apk"
-              },
-              {
-                "name": "sources.zip",
-                "browser_download_url": "https://github.com/ArrogHie/ControlECO/releases/download/v0.4.6-beta/sources.zip"
               }
             ]
           },
@@ -38,57 +34,30 @@ class AppUpdateTest {
             "name": "v0.4.5-beta",
             "body": "旧版本",
             "draft": false,
-            "prerelease": true,
-            "assets": [
-              {
-                "name": "ControlECO-0.4.5-beta.apk",
-                "browser_download_url": "https://github.com/ArrogHie/ControlECO/releases/download/v0.4.5-beta/ControlECO-0.4.5-beta.apk"
-              }
-            ]
+            "prerelease": true
           }
         ]
     """.trimIndent()
 
     @Test
-    fun `parse release json extracts tag apk url and notes`() {
+    fun `parse release json extracts tag notes and release page`() {
         val r = AppUpdate.parseReleaseJson(releaseJson)!!
         assertEquals("v0.4.6-beta", r.tagName)
+        // 跳转地址指向原仓库该版本的 Release 页面
         assertEquals(
-            "https://github.com/ArrogHie/ControlECO/releases/download/v0.4.6-beta/ControlECO-0.4.6-beta.apk",
-            r.apkUrl,
-        )
-        // 镜像地址 = 前缀拼接，zip 资产不参与（取首个 .apk）
-        assertEquals(
-            "https://gh-proxy.com/https://github.com/ArrogHie/ControlECO/releases/download/v0.4.6-beta/ControlECO-0.4.6-beta.apk",
-            r.apkUrlMirror,
+            "https://github.com/ArrogHie/ControlECO/releases/tag/v0.4.6-beta",
+            r.releaseUrl,
         )
         assertTrue(r.notes.contains("通知金额误取营销数字"))
         assertTrue(r.notes.contains("\n"))
     }
 
     @Test
-    fun `parse release json without apk asset keeps empty urls`() {
-        val json = """[{"tag_name": "v0.5.0", "body": "仅源码"}]"""
-        val r = AppUpdate.parseReleaseJson(json)!!
-        assertEquals("v0.5.0", r.tagName)
-        assertEquals("", r.apkUrl)
-        assertEquals("", r.apkUrlMirror)
-    }
-
-    @Test
-    fun `apk url scoped to newest release when older ones have assets`() {
-        // 列表接口新→旧：最新 release 没挂 APK 时不能错配到旧版本的资产
-        val json = """
-            [
-              {"tag_name": "v0.5.0", "assets": []},
-              {"tag_name": "v0.4.6-beta", "assets": [
-                {"browser_download_url": "https://github.com/ArrogHie/ControlECO/releases/download/v0.4.6-beta/x.apk"}
-              ]}
-            ]
-        """.trimIndent()
-        val r = AppUpdate.parseReleaseJson(json)!!
-        assertEquals("v0.5.0", r.tagName)
-        assertEquals("", r.apkUrl)
+    fun `only newest release is used`() {
+        // 列表接口新→旧：说明只取第一个 release，不串到旧版本
+        val r = AppUpdate.parseReleaseJson(releaseJson)!!
+        assertFalse(r.notes.contains("旧版本"))
+        assertFalse(r.releaseUrl.contains("v0.4.5-beta"))
     }
 
     @Test
@@ -128,48 +97,5 @@ class AppUpdateTest {
     fun `integer amount differences`() {
         assertTrue(AppUpdate.isNewerVersion("v1", "0.4.5-beta"))
         assertTrue(AppUpdate.isNewerVersion("0.10.0", "0.9.9"))
-    }
-
-    // ---------- 下载路径测速排序 ----------
-
-    private val direct = "https://github.com/ArrogHie/ControlECO/releases/download/v0.4.12-beta/x.apk"
-    private val mirror = "https://gh-proxy.com/$direct"
-
-    @Test
-    fun `faster path goes first`() {
-        // 镜像更快 → 镜像先行；直连更快 → 直连先行
-        assertEquals(
-            listOf(mirror, direct),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(320L, 90L)),
-        )
-        assertEquals(
-            listOf(direct, mirror),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(80L, 400L)),
-        )
-    }
-
-    @Test
-    fun `failed probe sorts last`() {
-        assertEquals(
-            listOf(direct, mirror),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(300L, null)),
-        )
-        assertEquals(
-            listOf(mirror, direct),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(null, 100L)),
-        )
-    }
-
-    @Test
-    fun `both failed or tie keeps original order`() {
-        // 都探测失败 / 耗时相同：保持原顺序（直连优先）
-        assertEquals(
-            listOf(direct, mirror),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(null, null)),
-        )
-        assertEquals(
-            listOf(direct, mirror),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(150L, 150L)),
-        )
     }
 }

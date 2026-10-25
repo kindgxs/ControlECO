@@ -236,8 +236,11 @@ fun PendingScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 isRefund = p.refundMark == RefundMark.REFUND_INCOME,
             ),
             defaultAccountId = vm.guessAccountId(p.sourcePackage, p.ruleName, p.paymentInstrument),
-            onConfirm = { categoryId, accountId, counterparty, excludeFromAssets ->
-                vm.confirmPending(p, categoryId, accountId, counterparty, excludeFromAssets)
+            onConfirm = { categoryId, accountId, counterparty, excludeFromAssets, excludeFromStats ->
+                vm.confirmPending(
+                    p, categoryId, accountId, counterparty,
+                    excludeFromAssets, excludeFromStats,
+                )
                 confirming = null
             },
             onDismiss = { confirming = null },
@@ -712,7 +715,7 @@ private fun ConfirmPendingSheet(
     categories: List<CategoryEntity>,
     defaultCategoryId: Long?,
     defaultAccountId: Long?,
-    onConfirm: (Long, Long, String, Boolean) -> Unit,
+    onConfirm: (Long, Long, String, Boolean, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var categoryId by remember(item.id) { mutableStateOf(defaultCategoryId) }
@@ -720,6 +723,8 @@ private fun ConfirmPendingSheet(
     var counterparty by remember(item.id) { mutableStateOf(item.counterparty) }
     // 是否计入资产统计：默认计入（自动入账口径）
     var excludeFromAssets by remember(item.id) { mutableStateOf(false) }
+    // 是否计入账单和收支统计：默认计入（自动入账口径）
+    var excludeFromStats by remember(item.id) { mutableStateOf(false) }
     var error by remember(item.id) { mutableStateOf<String?>(null) }
     val catsOfType = categories.filter { it.type == item.type }
     val c = MaterialTheme.eco
@@ -799,6 +804,13 @@ private fun ConfirmPendingSheet(
                 subtitle = "关闭后只记账，不改变账户余额",
             )
 
+            EcoSwitchRow(
+                title = "计入账单和收支统计",
+                checked = !excludeFromStats,
+                onCheckedChange = { excludeFromStats = !it },
+                subtitle = "关闭后只在账单列表显示一条记录，不计入收支统计",
+            )
+
             error?.let {
                 Text(it, style = EcoType.PageNote, color = c.clay)
             }
@@ -823,7 +835,10 @@ private fun ConfirmPendingSheet(
                                 return@save
                             }
                             error = null
-                            onConfirm(cat, acc, counterparty.trim(), excludeFromAssets)
+                            onConfirm(
+                                cat, acc, counterparty.trim(),
+                                excludeFromAssets, excludeFromStats,
+                            )
                         },
                     )
                 }

@@ -938,8 +938,10 @@ private fun DayHeader(day: LocalDate, dayRows: List<TransactionRow>, onClickDay:
         today.minusDays(1) -> "昨天"
         else -> dayOfWeekZh(day.dayOfWeek)
     }
-    val dayExpense = remember(dayRows) { dayRows.filter { it.type == TxType.EXPENSE }.sumOf { it.amountCents } }
-    val dayIncome = remember(dayRows) { dayRows.filter { it.type == TxType.INCOME }.sumOf { it.amountCents } }
+    // 日小计只统计「计入账单和收支统计」的记录；不计入的仍显示在列表里
+    val statsRows = remember(dayRows) { dayRows.filter { !it.excludeFromStats } }
+    val dayExpense = remember(statsRows) { statsRows.filter { it.type == TxType.EXPENSE }.sumOf { it.amountCents } }
+    val dayIncome = remember(statsRows) { statsRows.filter { it.type == TxType.INCOME }.sumOf { it.amountCents } }
     val dayBalance = dayIncome - dayExpense
     Row(
         Modifier

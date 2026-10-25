@@ -61,6 +61,11 @@ import com.controleco.app.update.AppUpdate
 private const val GITHUB_REPO_PATH = "ArrogHie/ControlECO"
 private const val GITHUB_REPO_URL = "https://github.com/$GITHUB_REPO_PATH"
 
+/** 本版本（合并版）所在的分支仓库 */
+private const val BRANCH_REPO_PATH = "kindgxs/ControlECO"
+private const val BRANCH_REPO_BRANCH = "Test"
+private const val BRANCH_REPO_URL = "https://github.com/$BRANCH_REPO_PATH/tree/$BRANCH_REPO_BRANCH"
+
 // 深色 hero 上的前景色：由主题推导（hero 渐变永远偏深，色相跟主题走）
 private val HERO_INK: Color
     @Composable get() = MaterialTheme.eco.onHero
@@ -85,8 +90,8 @@ private val LICENSES = listOf(
  * 设置 → 关于易控钱包：品牌 hero + 隐私承诺 + 版本/构建/仓库 + 独立仓库入口。
  *
  * 「检查更新」沿用全局更新流程：AppUpdate 发现新版本后写入 updateAvailable，
- * 由 Activity 级的更新对话框负责下载进度与「安装未知应用」授权闸（installGate），
- * 本页不重复实现下载逻辑，只负责发起检查与结果提示。
+ * 由 Activity 级的提示框只做提示并跳转原仓库 Release 页面（不再应用内下载安装），
+ * 本页不重复实现更新逻辑，只负责发起检查与结果提示。
  */
 @Composable
 fun SettingsAboutScreen(onBack: () -> Unit) {
@@ -99,6 +104,18 @@ fun SettingsAboutScreen(onBack: () -> Unit) {
             context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_REPO_URL)))
         }.onFailure {
             EcoToast.show("没有可用的浏览器，仓库地址：$GITHUB_REPO_PATH", EcoPillTone.Warn)
+        }
+        Unit
+    }
+
+    val openBranchRepo: () -> Unit = {
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(BRANCH_REPO_URL)))
+        }.onFailure {
+            EcoToast.show(
+                "没有可用的浏览器，分支地址：$BRANCH_REPO_PATH / $BRANCH_REPO_BRANCH",
+                EcoPillTone.Warn,
+            )
         }
         Unit
     }
@@ -131,6 +148,15 @@ fun SettingsAboutScreen(onBack: () -> Unit) {
             SettingsValueRow("开源仓库", "ArrogHie / ControlECO")
             SettingsDivider()
             SettingsRow(
+                title = "本版本分支仓库",
+                subtitle = "$BRANCH_REPO_PATH · $BRANCH_REPO_BRANCH",
+                icon = EcoIcons.External,
+                iconTint = MaterialTheme.eco.blue,
+                showChevron = true,
+                onClick = openBranchRepo,
+            )
+            SettingsDivider()
+            SettingsRow(
                 title = "检查更新",
                 icon = EcoIcons.Refresh,
                 iconTint = MaterialTheme.eco.blue,
@@ -143,7 +169,7 @@ fun SettingsAboutScreen(onBack: () -> Unit) {
                         AppUpdate.checkNow(context) { message ->
                             checking = false
                             when {
-                                message == null -> EcoToast.show("发现新版本，正在打开更新…", EcoPillTone.Blue)
+                                message == null -> EcoToast.show("发现新版本，正在打开发布页…", EcoPillTone.Blue)
                                 message.startsWith("检查失败") -> EcoToast.show(message, EcoPillTone.Warn)
                                 else -> EcoToast.show(message, EcoPillTone.Good)
                             }

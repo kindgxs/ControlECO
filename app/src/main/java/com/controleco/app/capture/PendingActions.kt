@@ -37,6 +37,8 @@ internal object PendingActions {
         amountCents: Long = item.amountCents,
         /** 不计入资产统计：自动入账默认 false（计入） */
         excludeFromAssets: Boolean = false,
+        /** 不计入账单和收支统计：自动入账默认 false（计入） */
+        excludeFromStats: Boolean = false,
     ): Long? {
         val externalId = "NTF:${item.dedupKey}"
         val counterpartyValue = counterparty.trim().ifBlank { item.counterparty }
@@ -58,6 +60,7 @@ internal object PendingActions {
                         refundPending = item.refundMark == RefundMark.REFUND_INCOME,
                         flowId = item.flowId,
                         excludeFromAssets = excludeFromAssets,
+                        excludeFromStats = excludeFromStats,
                     ),
                 )
                 pendingDao.deleteById(item.id)
@@ -107,6 +110,7 @@ internal object PendingActions {
         counterparty: String,
         amountCents: Long,
         excludeFromAssets: Boolean = false,
+        excludeFromStats: Boolean = false,
     ): Boolean {
         val externalId = "NTF:${item.dedupKey}"
         val txId = txDao.findIdByExternalId(externalId) ?: return false
@@ -115,7 +119,10 @@ internal object PendingActions {
         // 不能拿打开卡片时的旧快照把后到的富化结果覆盖回去
         val fresh = pendingDao.getById(item.id) ?: item
         db.withTransaction {
-            txDao.updateEnteredFields(txId, amountCents, categoryId, accountId, counterpartyValue, excludeFromAssets)
+            txDao.updateEnteredFields(
+                txId, amountCents, categoryId, accountId, counterpartyValue,
+                excludeFromAssets, excludeFromStats,
+            )
             // AUTO 条目同步：页面/银行通道后续富化以它为准，不能留旧值；并置位"用户已手改"
             pendingDao.updateFromPage(
                 item.id, amountCents, fresh.timestamp, counterpartyValue, fresh.note, fresh.ruleName,
