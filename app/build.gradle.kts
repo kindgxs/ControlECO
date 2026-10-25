@@ -5,6 +5,15 @@ plugins {
     alias(libs.plugins.ksp)
 }
 
+/**
+ * 构建时的提交短哈希：内置进 BuildConfig，供「检查更新」与分支仓库最新提交比对。
+ * 不在 git 工作区（如源码压缩包）构建时为空串，此时只提示分支最新提交、不判定是否有更新。
+ */
+val gitCommitShort: String = runCatching {
+    providers.exec { commandLine("git", "rev-parse", "--short=7", "HEAD") }
+        .standardOutput.asText.get().trim()
+}.getOrDefault("")
+
 android {
     namespace = "com.controleco.app"
     compileSdk = 35
@@ -14,8 +23,10 @@ android {
         minSdk = 26
         targetSdk = 35
         // 每次带修改的构建把第三位 +1；1.0.0 起为正式版本，版本名不再带 -beta 后缀
-        versionCode = 38
-        versionName = "1.0.3"
+        versionCode = 39
+        versionName = "1.0.4"
+        // 内置构建提交短哈希，供「检查更新」判断本版本分支仓库是否有新提交
+        buildConfigField("String", "GIT_COMMIT", "\"$gitCommitShort\"")
     }
 
     buildTypes {

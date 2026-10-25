@@ -775,7 +775,7 @@ private fun InstallmentEditorSheet(
                 title = "只记账，不扣资产",
                 checked = !deduct,
                 onCheckedChange = { deduct = !it },
-                subtitle = "开启后每期入账不会改变账户余额",
+                subtitle = "开启后每期入账不会改变账户余额；修改会同步已出账的账单",
             )
             if (deduct) {
                 EcoField(
@@ -797,7 +797,7 @@ private fun InstallmentEditorSheet(
                 checked = countInStats,
                 onCheckedChange = { countInStats = it },
                 subtitle = "关闭后每期只在账单显示一条记录，不计入收支/预算/存款统计；" +
-                    "与「只记账，不扣资产」互不影响",
+                    "与「只记账，不扣资产」互不影响；修改会同步已出账的账单",
             )
 
             Text(
@@ -1040,7 +1040,7 @@ private fun RecurringEditorSheet(
                 title = "只记账，不扣资产",
                 checked = !deduct,
                 onCheckedChange = { deduct = !it },
-                subtitle = "开启后入账不会改变账户余额",
+                subtitle = "开启后入账不会改变账户余额；修改会同步已出账的账单",
             )
             if (deduct) {
                 EcoField(
@@ -1062,7 +1062,7 @@ private fun RecurringEditorSheet(
                 checked = countInStats,
                 onCheckedChange = { countInStats = it },
                 subtitle = "关闭后每次只在账单显示一条记录，不计入收支/预算/存款统计；" +
-                    "与「只记账，不扣资产」互不影响",
+                    "与「只记账，不扣资产」互不影响；修改会同步已出账的账单",
             )
             EcoField(
                 label = "备注",

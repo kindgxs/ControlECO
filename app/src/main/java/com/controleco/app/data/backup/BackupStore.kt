@@ -47,7 +47,11 @@ internal data class BackupData(
 object BackupStore {
 
     private const val APP_TAG = "ControlECO"
-    private const val FORMAT_VERSION = 16
+    /**
+     * 备份格式版本：跟随数据库版本（v17 起账单 / 分期 / 周期多了「计入账单和收支统计」）。
+     * 导入不看这个值（缺字段一律按默认值还原），只用于识别备份出自哪一代数据结构。
+     */
+    private const val FORMAT_VERSION = 17
 
     /** 不参与导出的设置键（本地文件路径，换设备后用不了） */
     private val EXCLUDED_SETTINGS = setOf(

@@ -130,46 +130,32 @@ class AppUpdateTest {
         assertTrue(AppUpdate.isNewerVersion("0.10.0", "0.9.9"))
     }
 
-    // ---------- 下载路径测速排序 ----------
+    // ---------- 本版本分支仓库：最新提交解析与比对 ----------
 
-    private val direct = "https://github.com/ArrogHie/ControlECO/releases/download/v0.4.12-beta/x.apk"
-    private val mirror = "https://gh-proxy.com/$direct"
+    private val commitJson = """
+        {
+          "sha": "8f3c1d2a9b7e6f5d4c3b2a190817263544556677",
+          "node_id": "C_kwDOAbc",
+          "commit": {
+            "author": { "name": "kindgxs", "email": "dev@example.com", "date": "2026-10-25T10:00:00Z" },
+            "message": "feat: 新增开关",
+            "tree": { "sha": "1111111111111111111111111111111111111111" }
+          },
+          "parents": [ { "sha": "2222222222222222222222222222222222222222" } ]
+        }
+    """.trimIndent()
 
     @Test
-    fun `faster path goes first`() {
-        // 镜像更快 → 镜像先行；直连更快 → 直连先行
-        assertEquals(
-            listOf(mirror, direct),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(320L, 90L)),
-        )
-        assertEquals(
-            listOf(direct, mirror),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(80L, 400L)),
-        )
+    fun `parse commit json takes head sha`() {
+        assertEquals("8f3c1d2a9b7e6f5d4c3b2a190817263544556677", AppUpdate.parseCommitSha(commitJson))
+        assertNull(AppUpdate.parseCommitSha("""{"message":"Not Found"}"""))
     }
 
     @Test
-    fun `failed probe sorts last`() {
-        assertEquals(
-            listOf(direct, mirror),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(300L, null)),
-        )
-        assertEquals(
-            listOf(mirror, direct),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(null, 100L)),
-        )
-    }
-
-    @Test
-    fun `both failed or tie keeps original order`() {
-        // 都探测失败 / 耗时相同：保持原顺序（直连优先）
-        assertEquals(
-            listOf(direct, mirror),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(null, null)),
-        )
-        assertEquals(
-            listOf(direct, mirror),
-            AppUpdate.orderedByProbe(listOf(direct, mirror), listOf(150L, 150L)),
-        )
+    fun `commit compare uses short sha prefix`() {
+        assertTrue(AppUpdate.sameCommit("8f3c1d2a9b7e6f5d", "8f3c1d2"))
+        assertTrue(AppUpdate.sameCommit("8f3c1d2", "8f3c1d2a9b7e6f5d"))
+        assertFalse(AppUpdate.sameCommit("8f3c1d2", "9a8b7c6"))
+        assertFalse(AppUpdate.sameCommit("", "8f3c1d2"))
     }
 }

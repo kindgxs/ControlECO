@@ -89,9 +89,8 @@ private val LICENSES = listOf(
 /**
  * 设置 → 关于易控钱包：品牌 hero + 隐私承诺 + 版本/构建/仓库 + 独立仓库入口。
  *
- * 「检查更新」沿用全局更新流程：AppUpdate 发现新版本后写入 updateAvailable，
- * 由 Activity 级的更新对话框负责下载进度与「安装未知应用」授权闸（installGate），
- * 本页不重复实现下载逻辑，只负责发起检查与结果提示。
+ * 「检查更新」只做提示：AppUpdate 同时查上游仓库与本版本分支，用一条 Toast 告知是否有更新，
+ * 不下载、不安装。
  */
 @Composable
 fun SettingsAboutScreen(onBack: () -> Unit) {
@@ -156,13 +155,12 @@ fun SettingsAboutScreen(onBack: () -> Unit) {
                 onClick = {
                     if (!checking) {
                         checking = true
-                        AppUpdate.checkNow(context) { message ->
+                        AppUpdate.checkNow { message ->
                             checking = false
-                            when {
-                                message == null -> EcoToast.show("发现新版本，正在打开更新…", EcoPillTone.Blue)
-                                message.startsWith("检查失败") -> EcoToast.show(message, EcoPillTone.Warn)
-                                else -> EcoToast.show(message, EcoPillTone.Good)
-                            }
+                            EcoToast.show(
+                                message,
+                                if (message.contains("失败")) EcoPillTone.Warn else EcoPillTone.Good,
+                            )
                         }
                     }
                 },

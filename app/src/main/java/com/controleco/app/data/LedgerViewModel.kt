@@ -1426,16 +1426,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     fun showOverlayTest(delayMs: Long = 0, onResult: (String) -> Unit) =
         CaptureCenter.showOverlayTest(delayMs, onResult)
 
-    private val _autoUpdateEnabled = MutableStateFlow(AppUpdate.isAutoUpdateEnabled(getApplication()))
-    val autoUpdateEnabled: StateFlow<Boolean> = _autoUpdateEnabled
-
-    fun setAutoUpdateEnabled(enabled: Boolean) {
-        AppUpdate.setAutoUpdateEnabled(getApplication(), enabled)
-        _autoUpdateEnabled.value = enabled
-    }
-
-    /** 手动检查更新（设置页「检查更新」）：无视开关与间隔；发现新版本走全局弹窗，无更新/失败经回调提示 */
-    fun checkUpdateNow(onResult: (String?) -> Unit) = AppUpdate.checkNow(getApplication(), onResult)
+    /**
+     * 手动检查更新（设置页 / 关于页「检查更新」）：自动更新已关闭，启动不再自动检查。
+     * 同时查上游仓库与本版本分支，只回一条「是否有更新」提示（不下载、不安装）。
+     */
+    fun checkUpdateNow(onResult: (String) -> Unit) = AppUpdate.checkNow(onResult)
 
     /** 通知权限（安卓 13+ 运行时） */
     fun canPostNotifications(): Boolean = CaptureCenter.canPostNotifications()
@@ -1947,7 +1942,13 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     postedPeriods = oldPlan?.postedPeriods ?: 0,
                     createdAt = oldPlan?.createdAt ?: System.currentTimeMillis(),
                 )
-                if (id > 0) planDao.updateInstallment(entity) else planDao.insertInstallment(entity)
+                if (id > 0) {
+                    planDao.updateInstallment(entity)
+                    // 期初设定改动同步到已出账的账单（不计资产期数 / 只记账不扣资产 / 计入统计）
+                    syncInstallmentEntries(entity)
+                } else {
+                    planDao.insertInstallment(entity)
+                }
                 PlanAutoPoster.postDue(db, zone = zone)
                 PlanScheduler.schedule(getApplication(), db)
                 mainResult(onResult, null)
@@ -2046,7 +2047,13 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     note = note,
                     createdAt = old?.createdAt ?: System.currentTimeMillis(),
                 )
-                if (id > 0) planDao.updateRecurring(entity) else planDao.insertRecurring(entity)
+                if (id > 0) {
+                    planDao.updateRecurring(entity)
+                    // 同分期：期初设定改动同步到已出账的账单
+                    syncRecurringEntries(entity)
+                } else {
+                    planDao.insertRecurring(entity)
+                }
                 PlanAutoPoster.postDue(db, zone = zone)
                 PlanScheduler.schedule(getApplication(), db)
                 mainResult(onResult, null)
@@ -2055,6 +2062,49 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 mainResult(onResult, "保存失败")
             }
         }
+    }
+
+    /**
+     * 分期计划改参数后，把已出账的账单改成与新设定一致。
+     * 只重算两个标记（是否不计资产 / 是否计入收支统计），金额、日期、账户、分类一律不动：
+     * - 「只记账，不扣资产」由否改是 → 已出账的每期都不再扣资产；
+     * - 「指定不扣资产的期数」改小（如 1-3 改 1-2）→ 被移出的第 3 期恢复扣资产；
+     * - 「计入账单和收支统计」改否 → 已出账的每条都不再计入收支/预算/存款统计。
+     * 整批回写放在事务里，失败只记日志、不影响计划本身保存。
+     */
+    private suspend fun syncInstallmentEntries(plan: InstallmentPlanEntity) {
+        if (plan.id <= 0L) return
+        runCatching {
+            db.withTransaction {
+                txDao.listByExternalIdPattern("PLAN_INST:${plan.id}:%").forEach { tx ->
+                    val index = tx.externalId?.substringAfterLast(':')?.toIntOrNull() ?: return@forEach
+                    val exclude = InstallmentMath.excludesAsset(
+                        plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
+                    )
+                    if (tx.excludeFromAssets != exclude || tx.countInStats != plan.countInStats) {
+                        txDao.updatePlanEntryFlags(tx.id, exclude, plan.countInStats)
+                    }
+                }
+            }
+        }.onFailure { AppLog.e("plan", "sync installment entries failed", it) }
+    }
+
+    /** 周期计划同上：按「第几次」重算是否不计资产，并同步统计开关 */
+    private suspend fun syncRecurringEntries(plan: RecurringPlanEntity) {
+        if (plan.id <= 0L) return
+        runCatching {
+            db.withTransaction {
+                txDao.listByExternalIdPattern("PLAN_REC:${plan.id}:%").forEach { tx ->
+                    val index = tx.externalId?.substringAfterLast(':')?.toIntOrNull() ?: return@forEach
+                    val exclude = InstallmentMath.excludesAssetAt(
+                        plan.deductAsset, plan.excludeAssetPeriods, index,
+                    )
+                    if (tx.excludeFromAssets != exclude || tx.countInStats != plan.countInStats) {
+                        txDao.updatePlanEntryFlags(tx.id, exclude, plan.countInStats)
+                    }
+                }
+            }
+        }.onFailure { AppLog.e("plan", "sync recurring entries failed", it) }
     }
 
     /**

@@ -150,6 +150,21 @@ interface TransactionDao {
     @Query("DELETE FROM transactions WHERE externalId LIKE :pattern")
     suspend fun deleteByExternalIdPattern(pattern: String): Int
 
+    /** 某计划已入账的账单（externalId 前缀匹配），供计划参数调整后回写标记 */
+    @Query("SELECT * FROM transactions WHERE externalId LIKE :pattern")
+    suspend fun listByExternalIdPattern(pattern: String): List<TransactionEntity>
+
+    /**
+     * 计划参数调整后同步已出账账单的两个标记：
+     * 「计入资产统计」按新期数规则重算，「计入账单和收支统计」跟随计划开关。
+     */
+    @Query(
+        """UPDATE transactions
+           SET excludeFromAssets = :excludeFromAssets, countInStats = :countInStats
+           WHERE id = :id"""
+    )
+    suspend fun updatePlanEntryFlags(id: Long, excludeFromAssets: Boolean, countInStats: Boolean)
+
     /**
      * 页面补充了可信支付方式后重新匹配账户：只更新账户，不动金额/分类/商户（用户编辑保护由调用方判断）。
      * 账户余额与统计由 Room 的 Flow 自动刷新。

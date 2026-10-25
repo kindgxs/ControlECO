@@ -116,7 +116,6 @@ fun SettingsScreen(
     val captureNotify by vm.captureNotifyEnabled.collectAsStateWithLifecycle()
     val overlayConfirm by vm.overlayConfirmEnabled.collectAsStateWithLifecycle()
     val autoEntry by vm.autoEntryEnabled.collectAsStateWithLifecycle()
-    val autoUpdate by vm.autoUpdateEnabled.collectAsStateWithLifecycle()
     val captureEnabled by vm.captureEnabled.collectAsStateWithLifecycle()
     val lastCaptureAt by vm.lastCaptureAt.collectAsStateWithLifecycle()
     val pendingCount by vm.pendingCount.collectAsStateWithLifecycle()
@@ -246,28 +245,28 @@ fun SettingsScreen(
                 onCheckedChange = { AnimationPrefs.set(context, it) },
             )
             SettingsDivider()
+            // 自动更新已停用：开关置灰不可选（默认关闭），更新只在手动「检查更新」时提示
             SettingsSwitchRow(
                 title = "自动更新",
-                checked = autoUpdate,
-                onCheckedChange = { vm.setAutoUpdateEnabled(it) },
+                subtitle = "已关闭：不会自动检查或下载，仅在下方手动检查时提示",
+                checked = false,
+                enabled = false,
+                onCheckedChange = {},
             )
             SettingsDivider()
             SettingsRow(
                 title = "检查更新",
+                subtitle = "同时检查上游仓库与本版本分支，只提示是否有更新",
                 icon = EcoIcons.Download,
                 trail = "v${BuildConfig.VERSION_NAME}",
                 showChevron = true,
                 onClick = {
                     EcoToast.show("正在检查更新…", EcoPillTone.Blue)
                     vm.checkUpdateNow { message ->
-                        if (message == null) {
-                            EcoToast.show("发现新版本，正在打开更新…", EcoPillTone.Blue)
-                        } else {
-                            EcoToast.show(
-                                message,
-                                if (message.startsWith("检查失败")) EcoPillTone.Warn else EcoPillTone.Good,
-                            )
-                        }
+                        EcoToast.show(
+                            message,
+                            if (message.contains("失败")) EcoPillTone.Warn else EcoPillTone.Good,
+                        )
                     }
                 },
             )

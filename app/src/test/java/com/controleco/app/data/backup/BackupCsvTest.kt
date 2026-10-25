@@ -6,6 +6,7 @@ import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TxSource
 import com.controleco.app.data.db.TxType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -27,10 +28,10 @@ class BackupCsvTest {
         2,早餐,EXPENSE,0,,1
         3,工资,INCOME,0,,
         ##transactions|交易记录
-        时间,类型,分类,金额,资产账户,记录标识,备注,二级分类,币种,编号,来源,退款状态,退款待定,不扣资产,流水号,创建时间,商户
-        2026-10-24 12:03:00,支出,餐饮,25.00,招商信用卡,,午饭,早餐,¥,11,WECHAT,NONE,0,1,,1750000000000,老王包子
-        2026/10/23,收入,工资,"5,000.00",招商储蓄卡,EXT-1,十月工资,,¥,12,MANUAL,NONE,0,0,,1750000000000,
-        2026-10-22,支出,餐饮,100.00,招商信用卡,,退款,早餐,¥,13,ALIPAY,REFUNDED_EXPENSE,0,1,,1750000000000,
+        时间,类型,分类,金额,资产账户,记录标识,备注,二级分类,币种,编号,来源,退款状态,退款待定,不扣资产,流水号,创建时间,商户,计入统计
+        2026-10-24 12:03:00,支出,餐饮,25.00,招商信用卡,,午饭,早餐,¥,11,WECHAT,NONE,0,1,,1750000000000,老王包子,0
+        2026/10/23,收入,工资,"5,000.00",招商储蓄卡,EXT-1,十月工资,,¥,12,MANUAL,NONE,0,0,,1750000000000,,1
+        2026-10-22,支出,餐饮,100.00,招商信用卡,,退款,早餐,¥,13,ALIPAY,REFUNDED_EXPENSE,0,1,,1750000000000,,
     """.trimIndent()
 
     private fun parse(): BackupData {
@@ -68,6 +69,10 @@ class BackupCsvTest {
         assertEquals(TxSource.WECHAT, lunch.source)
         assertEquals("老王包子", lunch.counterparty)
         assertNull(lunch.externalId)
+        // 「计入统计」列：0 = 只在账单显示一条记录；空列回落为计入
+        assertFalse(lunch.countInStats)
+        assertTrue(data.transactions.first { it.id == 12L }.countInStats)
+        assertTrue(data.transactions.first { it.id == 13L }.countInStats)
     }
 
     @Test
