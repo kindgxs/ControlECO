@@ -6,6 +6,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
@@ -121,8 +123,10 @@ fun SettingsScreen(
     val pendingCount by vm.pendingCount.collectAsStateWithLifecycle()
     val rules by vm.merchantRules.collectAsStateWithLifecycle(initialValue = emptyList())
     val homeQuickAdd by vm.homeQuickAddEnabled.collectAsStateWithLifecycle()
+    val homeModeOrder by vm.homeModeOrder.collectAsStateWithLifecycle()
     val depositStart by vm.depositPlanStartMonth.collectAsStateWithLifecycle()
 
+    var showModeOrder by remember { mutableStateOf(false) }
     var showDepositStart by remember { mutableStateOf(false) }
     var depositStartDraft by remember { mutableStateOf(YearMonth.now()) }
 
@@ -221,6 +225,17 @@ fun SettingsScreen(
                 onCheckedChange = { vm.setHomeQuickAddEnabled(it) },
             )
             SettingsDivider()
+            // 首页翻转的三个页面：顺序可调，随设置一起备份还原
+            SettingsRow(
+                title = "首页页面顺序",
+                subtitle = "首页左右滑动的三个页面，可调整先后顺序",
+                icon = EcoIcons.Home,
+                iconTint = MaterialTheme.eco.blue,
+                trail = homeModeOrder.joinToString(" → ") { homeModeLabel(it) },
+                showChevron = true,
+                onClick = { showModeOrder = true },
+            )
+            SettingsDivider()
             // 存款页「每月存款」的起始月份：未设置时默认显示近 12 个月
             SettingsRow(
                 title = "存款计划开始时间",
@@ -307,6 +322,46 @@ fun SettingsScreen(
         )
     }
 
+    if (showModeOrder) {
+        val modeColors = MaterialTheme.eco
+        EcoSheet(
+            onDismiss = { showModeOrder = false },
+            title = "首页页面顺序",
+            subtitle = "用箭头调整三个页面在首页的先后顺序",
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)) {
+                homeModeOrder.forEachIndexed { index, id ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(modeColors.surface2)
+                            .padding(horizontal = 12.dp, vertical = 9.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${index + 1}",
+                            style = EcoType.Micro,
+                            color = modeColors.quiet,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            homeModeLabel(id),
+                            style = EcoType.RowTitle,
+                            color = modeColors.ink,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OrderArrow("↑", enabled = index > 0) { vm.moveHomeMode(id, -1) }
+                        Spacer(Modifier.width(6.dp))
+                        OrderArrow("↓", enabled = index < homeModeOrder.lastIndex) { vm.moveHomeMode(id, 1) }
+                    }
+                    if (index < homeModeOrder.lastIndex) Spacer(Modifier.height(8.dp))
+                }
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+    }
+
     if (showDepositStart) {
         val draft = depositStartDraft
         val now = YearMonth.now()
@@ -358,6 +413,33 @@ fun SettingsScreen(
                 Spacer(Modifier.height(14.dp))
             }
         }
+    }
+}
+
+/** 首页页面 id → 中文名 */
+private fun homeModeLabel(id: String): String = when (id) {
+    "budget" -> "预算"
+    "category" -> "分类"
+    else -> "资产"
+}
+
+/** 页面顺序调整的小箭头按钮 */
+@Composable
+private fun OrderArrow(text: String, enabled: Boolean, onClick: () -> Unit) {
+    val c = MaterialTheme.eco
+    Box(
+        Modifier
+            .size(30.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .background(c.surface)
+            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text,
+            style = EcoType.RowTitle.copy(fontSize = 14.sp),
+            color = if (enabled) c.blueDeep else c.quiet.copy(alpha = 0.42f),
+        )
     }
 }
 

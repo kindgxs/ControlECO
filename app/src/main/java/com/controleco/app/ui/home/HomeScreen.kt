@@ -77,9 +77,12 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.CategoryTree
+import com.controleco.app.data.PeriodMode
 import com.controleco.app.data.SubcategoryRollupMode
 import com.controleco.app.data.budget.Budget
+import com.controleco.app.data.budget.MonthBudgetMath
 import com.controleco.app.data.budget.MonthPeriod
+import com.controleco.app.data.calendar.CalendarMath
 import com.controleco.app.data.db.AccountBalanceRow
 import com.controleco.app.data.db.AccountEntity
 import com.controleco.app.data.db.CategoryEntity
@@ -91,6 +94,7 @@ import com.controleco.app.data.model.AssetAccountSnapshot
 import com.controleco.app.data.model.AssetMath
 import com.controleco.app.data.model.AssetSummary
 import com.controleco.app.ui.common.EcoIcons
+import com.controleco.app.ui.common.PeriodPickerSheet
 import com.controleco.app.ui.common.rememberReducedMotion
 import com.controleco.app.ui.eco.EcoAutoMoney
 import com.controleco.app.ui.eco.EcoBudgetSheet
@@ -98,15 +102,19 @@ import com.controleco.app.ui.eco.EcoArrival
 import com.controleco.app.ui.eco.EcoCategoryTile
 import com.controleco.app.ui.eco.EcoCountUpMoney
 import com.controleco.app.ui.eco.EcoIconTile
+import com.controleco.app.ui.eco.EcoIconButton
 import com.controleco.app.ui.eco.EcoMicro
 import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPill
 import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoProgressBar
+import com.controleco.app.ui.eco.EcoSheet
+import com.controleco.app.ui.eco.EcoTextAction
 import com.controleco.app.ui.eco.EcoTopBar
 import com.controleco.app.ui.eco.LocalAnimationsEnabled
 import com.controleco.app.ui.eco.ecoBottomContentPadding
+import com.controleco.app.ui.eco.ecoPressable
 import com.controleco.app.ui.theme.EcoColors
 import com.controleco.app.ui.theme.EcoType
 import com.controleco.app.ui.theme.accBook
@@ -115,6 +123,7 @@ import com.controleco.app.ui.theme.eco
 import com.controleco.app.util.Money
 import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -126,6 +135,9 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 private const val MODE_COUNT = 3
+private const val MODE_BUDGET = "budget"
+private const val MODE_CATEGORY = "category"
+private const val MODE_ASSET = "asset"
 private const val DRAG_FLIP_THRESHOLD_DEG = 45f
 private const val DRAG_FULL_TURN_WIDTH_FRACTION = 0.3f
 private const val FLICK_WIDTHS_PER_SECOND = 1.1f
@@ -163,6 +175,7 @@ fun HomeScreen(
     onOpenCategories: () -> Unit,
     onOpenAccounts: () -> Unit,
 ) {
+    val c = MaterialTheme.eco
     val budgetCents by vm.monthlyBudgetCents.collectAsStateWithLifecycle()
     val spentCents by vm.homeSpent.collectAsStateWithLifecycle()
     val todaySpentCents by vm.homeTodaySpent.collectAsStateWithLifecycle()
@@ -177,6 +190,14 @@ fun HomeScreen(
     val dailyBudgetMode by vm.dailyBudgetMode.collectAsStateWithLifecycle()
     val dailyBudgetCents by vm.dailyBudgetCents.collectAsStateWithLifecycle()
     val periodRows by vm.homePeriodRows.collectAsStateWithLifecycle()
+    // 预算页可回看某个月/某一天：视图日期与对应区间、月支出、当日支出、月内账单
+    val homeViewDate by vm.homeBudgetDate.collectAsStateWithLifecycle()
+    val viewPeriod by vm.homeBudgetPeriod.collectAsStateWithLifecycle()
+    val viewMonthSpent by vm.homeBudgetMonthSpent.collectAsStateWithLifecycle()
+    val viewDaySpent by vm.homeBudgetDaySpent.collectAsStateWithLifecycle()
+    val calendarRows by vm.homeBudgetCalendarRows.collectAsStateWithLifecycle()
+    val budgetPlans by vm.budgetPlans.collectAsStateWithLifecycle()
+    val monthlyBudgetAmount by vm.monthlyBudgetAmountCents.collectAsStateWithLifecycle()
 
     val spentReady = spentCents
     val todaySpentReady = todaySpentCents
@@ -211,11 +232,77 @@ fun HomeScreen(
         )
     }
     val s = snapshot
+
+    // ---------- 预算页：回看月份/日期 ----------
+    var showBudgetCalendar by remember { mutableStateOf(false) }
+    val viewDate = homeViewDate ?: today
+    val viewingToday = homeViewDate == null || homeViewDate == today
+    val viewMonth = remember(viewPeriod.start.year, viewPeriod.start.monthValue) { YearMonth.from(viewPeriod.start) }
+    // 该月的生效预算：该月单独设置优先，否则回落到全局（日预算模式按该月天数折算）
+    val viewMonthBudget = remember(viewMonth, monthStartDay, budgetPlans, monthlyBudgetAmount, dailyBudgetCents, dailyBudgetMode) {
+        MonthBudgetMath.totalFor(
+            viewMonth,
+            monthStartDay,
+            budgetPlans,
+            monthlyBudgetAmount,
+            dailyBudgetCents,
+            dailyBudgetMode,
+        )
+    }
+    val viewMonthSpentReady = viewMonthSpent
+    val viewDaySpentReady = viewDaySpent
+    val budgetModeReady = viewMonthSpentReady != null && viewDaySpentReady != null
+    val viewSnapshot = remember(
+        viewMonthBudget, viewMonthSpentReady, viewDaySpentReady, viewDate, viewPeriod, dailyBudgetMode, dailyBudgetCents,
+    ) {
+        if (viewMonthSpentReady == null || viewDaySpentReady == null) {
+            null
+        } else {
+            Budget.compute(
+                viewMonthBudget,
+                viewMonthSpentReady,
+                viewDate,
+                viewDaySpentReady,
+                period = viewPeriod,
+                dailyBudgetCents = if (dailyBudgetMode) dailyBudgetCents else 0L,
+            )
+        }
+    }
+    // 「本日剩余」的日额：今天用自适应日均（剩余÷剩余天数）；回看历史日期用该月的日均/日预算
+    val dayAllowanceCents = when {
+        viewingToday -> viewSnapshot?.suggestedDailyCents ?: 0L
+        dailyBudgetMode -> dailyBudgetCents
+        viewMonthBudget > 0L -> Budget.dailyEquivalent(viewMonthBudget, viewPeriod.days)
+        else -> 0L
+    }
+    val periodEnded = !today.isBefore(viewPeriod.endExclusive)
+    val ringLabel = if (viewingToday || !periodEnded) "本月剩余" else "${viewPeriod.start.monthValue}月剩余"
+    // 预算日历按自然月展示（与账单页日历一致）：自己的月预算 + 该自然月支出
+    val calendarMonth = YearMonth.from(viewDate)
+    val calendarMonthBudget = remember(
+        calendarMonth, monthStartDay, budgetPlans, monthlyBudgetAmount, dailyBudgetCents, dailyBudgetMode,
+    ) {
+        MonthBudgetMath.totalFor(
+            calendarMonth,
+            monthStartDay,
+            budgetPlans,
+            monthlyBudgetAmount,
+            dailyBudgetCents,
+            dailyBudgetMode,
+        )
+    }
+    val calendarMonthSpent = remember(calendarRows) {
+        calendarRows?.let { CalendarMath.totals(it).expenseCents } ?: 0L
+    }
+
     val reducedMotion = rememberReducedMotion()
     // 设置里关掉「显示动画」后等同于减少动效：翻转/环/趋势图都直接到位
     val motionOff = reducedMotion || !LocalAnimationsEnabled.current
     val scope = rememberCoroutineScope()
     var mode by rememberSaveable { mutableIntStateOf(0) }
+    // 设置里可调整三个页面的先后顺序；mode 存的是顺序中的位置
+    val modeOrder by vm.homeModeOrder.collectAsStateWithLifecycle()
+    val currentMode = modeOrder.getOrElse(mode) { MODE_BUDGET }
     val flip = remember { Animatable(0f) }
     val density = LocalDensity.current.density
     var dragging by remember { mutableStateOf(false) }
@@ -287,22 +374,49 @@ fun HomeScreen(
         categoryBudgets.values.filter { it > 0L }.sum()
     }
 
-    val monthCn = chineseMonth(period.start.monthValue)
-    val monthEn = period.start.format(DateTimeFormatter.ofPattern("MMM", Locale.ENGLISH)).uppercase(Locale.ENGLISH)
-    val modeLow = when (mode) {
-        0 -> " / 预算"
-        1 -> " / 分类"
+    // 预算页可回看月份：顶栏年月跟着视图走，其余页面仍显示当前会计月
+    val barPeriod = if (currentMode == MODE_BUDGET) viewPeriod else period
+    val monthCn = chineseMonth(barPeriod.start.monthValue)
+    val monthEn = barPeriod.start.format(DateTimeFormatter.ofPattern("MMM", Locale.ENGLISH)).uppercase(Locale.ENGLISH)
+    val modeLow = when (currentMode) {
+        MODE_BUDGET -> if (viewingToday) " / 预算" else " / 预算 · ${viewDate.monthValue}/${viewDate.dayOfMonth}"
+        MODE_CATEGORY -> " / 分类"
         else -> " / 资产"
     }
 
     Column(Modifier.fillMaxSize()) {
         EcoTopBar(
-            micro = "${period.start.year} / $monthEn 账本",
+            micro = "${barPeriod.start.year} / $monthEn 账本",
             title = monthCn,
             low = modeLow,
+            titleLeading = if (currentMode == MODE_BUDGET) {
+                {
+                    // 预算日历入口：月历里能看到每月预算与每月支出，并可选具体日期
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(9.dp))
+                            .ecoPressable(onClick = { showBudgetCalendar = true })
+                            .padding(4.dp),
+                    ) {
+                        Icon(
+                            EcoIcons.Calendar,
+                            contentDescription = "预算日历",
+                            tint = c.blue,
+                            modifier = Modifier.size(17.dp),
+                        )
+                    }
+                }
+            } else {
+                null
+            },
             action = {
                 // 资产页：右上角「账户」入口，和左上角标题同处顶栏，水平对齐
-                if (mode == 2) AccountEntry(onClick = onOpenAccounts)
+                when (currentMode) {
+                    MODE_ASSET -> AccountEntry(onClick = onOpenAccounts)
+                    MODE_BUDGET -> if (homeViewDate != null) {
+                        EcoTextAction("回到今天", onClick = { vm.setHomeBudgetDate(null) })
+                    }
+                }
             },
         )
         Box(
@@ -355,13 +469,22 @@ fun HomeScreen(
                         )
                     },
             ) {
-                when (mode) {
-                    0 -> if (s != null) {
-                        ModeRemaining(s, period, today)
-                    } else {
-                        ModeNeedsBudget(dailyMode = dailyBudgetMode, title = "预算", onSetBudget = { showBudgetSheet = true })
+                when (currentMode) {
+                    MODE_BUDGET -> when {
+                        // 切月/切日时数据还在路上：先不画，避免闪出错误的「0 支出」
+                        !budgetModeReady -> Unit
+                        viewSnapshot != null -> ModeRemaining(
+                            s = viewSnapshot,
+                            period = viewPeriod,
+                            viewedDate = viewDate,
+                            isViewingToday = viewingToday,
+                            ringLabel = ringLabel,
+                            dayAllowanceCents = dayAllowanceCents,
+                            daySpentCents = viewDaySpentReady ?: 0L,
+                        )
+                        else -> ModeNeedsBudget(dailyMode = dailyBudgetMode, title = "预算", onSetBudget = { showBudgetSheet = true })
                     }
-                    1 -> if (s != null) {
+                    MODE_CATEGORY -> if (s != null) {
                         ModeCategories(
                             totalRemaining = s.remainingCents,
                             budgetCents = s.budgetCents,
@@ -383,7 +506,7 @@ fun HomeScreen(
                     )
                 }
             }
-            if (mode == 1 && s != null) {
+            if (currentMode == MODE_CATEGORY && s != null) {
                 Box(
                     Modifier
                         .align(Alignment.TopEnd)
@@ -397,22 +520,235 @@ fun HomeScreen(
         Spacer(Modifier.height(ecoBottomContentPadding(extra = 4.dp)))
     }
 
-    if (showBudgetSheet) {
-        EcoBudgetSheet(
-            dailyMode = dailyBudgetMode,
-            currentCents = if (dailyBudgetMode) dailyBudgetCents else budgetCents,
-            onSave = {
-                if (dailyBudgetMode) vm.setDailyBudget(it) else vm.setMonthlyBudget(it)
-                showBudgetSheet = false
+    if (showBudgetCalendar) {
+        BudgetCalendarSheet(
+            viewDate = viewDate,
+            month = calendarMonth,
+            monthBudgetCents = calendarMonthBudget,
+            monthSpentCents = calendarMonthSpent,
+            rows = calendarRows.orEmpty(),
+            onBrowseMonth = { ym -> vm.setHomeBudgetDate(dateInMonth(viewDate, ym)) },
+            onSelectDate = { date ->
+                showBudgetCalendar = false
+                vm.setHomeBudgetDate(date)
             },
-            onDismiss = { showBudgetSheet = false },
+            onToday = {
+                showBudgetCalendar = false
+                vm.setHomeBudgetDate(null)
+            },
+            onDismiss = { showBudgetCalendar = false },
+        )
+    }
+}
+
+/** 在目标月份里找与 [date] 同号的一天（短月自动落到月末） */
+private fun dateInMonth(date: LocalDate, month: YearMonth): LocalDate =
+    month.atDay(date.dayOfMonth.coerceAtMost(month.lengthOfMonth()))
+
+/**
+ * 预算日历：月历格子里显示每天的支出，底部汇总「月预算 / 月支出 / 月剩余」；
+ * 点某一天 = 首页预算环切到该日期，点月份标题可跳年/月（结构与账单页日历一致）。
+ */
+@Composable
+private fun BudgetCalendarSheet(
+    viewDate: LocalDate,
+    month: YearMonth,
+    monthBudgetCents: Long,
+    monthSpentCents: Long,
+    rows: List<TransactionRow>,
+    onBrowseMonth: (YearMonth) -> Unit,
+    onSelectDate: (LocalDate) -> Unit,
+    onToday: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    var pickerOpen by remember { mutableStateOf(false) }
+    val byDay = remember(rows) { CalendarMath.byDay(rows) }
+
+    EcoSheet(onDismiss = onDismiss, title = "预算日历", subtitle = "每月预算与每月支出，点选日期查看当天") {
+        Column(Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(9.dp))
+                        .clickable { pickerOpen = true }
+                        .padding(vertical = 4.dp, horizontal = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("${month.year} 年 ${month.monthValue} 月", style = EcoType.SectionTitle, color = c.ink, maxLines = 1)
+                    Spacer(Modifier.width(5.dp))
+                    Text("▾", style = EcoType.Micro.copy(fontSize = 10.sp), color = c.quiet)
+                }
+                EcoTextAction("回到今天", onClick = onToday)
+                Spacer(Modifier.width(4.dp))
+                EcoIconButton(
+                    icon = EcoIcons.Back,
+                    contentDescription = "上个月",
+                    onClick = { onBrowseMonth(month.minusMonths(1)) },
+                    size = 32.dp,
+                )
+                Spacer(Modifier.width(6.dp))
+                EcoIconButton(
+                    icon = EcoIcons.Next,
+                    contentDescription = "下个月",
+                    onClick = { onBrowseMonth(month.plusMonths(1)) },
+                    size = 32.dp,
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            EcoPane(Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(24.dp)
+                            .padding(start = 6.dp, end = 6.dp, top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        listOf("一", "二", "三", "四", "五", "六", "日").forEach {
+                            Text(
+                                it,
+                                style = EcoType.Micro,
+                                color = c.quiet,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+                    }
+                    val first = month.atDay(1)
+                    val offset = first.dayOfWeek.value - 1
+                    val days = month.lengthOfMonth()
+                    val weeks = (offset + days + 6) / 7
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(start = 6.dp, end = 6.dp, bottom = 4.dp),
+                    ) {
+                        repeat(weeks) { week ->
+                            Row(Modifier.fillMaxWidth()) {
+                                repeat(7) { col ->
+                                    val dayNumber = week * 7 + col - offset + 1
+                                    if (dayNumber in 1..days) {
+                                        val date = month.atDay(dayNumber)
+                                        BudgetDayCell(
+                                            date = date,
+                                            expenseCents = byDay[date]?.expenseCents ?: 0L,
+                                            selected = date == viewDate,
+                                            isToday = date == LocalDate.now(),
+                                            onClick = { onSelectDate(date) },
+                                            modifier = Modifier.weight(1f),
+                                        )
+                                    } else {
+                                        Spacer(Modifier.weight(1f).height(48.dp))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            EcoPane(Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 10.dp)) {
+                    BudgetTotal("月预算", Money.formatYuanCompact(monthBudgetCents), c.blueDeep)
+                    BudgetTotal("月支出", Money.formatYuanCompact(monthSpentCents), c.clay)
+                    BudgetTotal(
+                        "月剩余",
+                        Money.formatYuanCompact(monthBudgetCents - monthSpentCents),
+                        if (monthBudgetCents - monthSpentCents >= 0L) c.jade else c.clay,
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "点选某一天后，首页的预算环与「本日剩余」会切到那一天；「回到今天」恢复当前显示。",
+                style = EcoType.PageNote,
+                color = c.quiet,
+            )
+        }
+    }
+
+    if (pickerOpen) {
+        PeriodPickerSheet(
+            mode = PeriodMode.MONTH,
+            current = month,
+            onSelectMonth = { ym ->
+                pickerOpen = false
+                onBrowseMonth(ym)
+            },
+            onSelectYear = { year ->
+                pickerOpen = false
+                onBrowseMonth(month.withYear(year))
+            },
+            onDismiss = { pickerOpen = false },
         )
     }
 }
 
 @Composable
-private fun ModeRemaining(s: Budget.Snapshot, period: MonthPeriod, today: LocalDate) {
+private fun BudgetDayCell(
+    date: LocalDate,
+    expenseCents: Long,
+    selected: Boolean,
+    isToday: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
     val c = MaterialTheme.eco
+    Column(
+        modifier
+            .height(48.dp)
+            .padding(1.5.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (selected) c.blueSoft else if (isToday) c.surface2 else Color.Transparent)
+            .then(if (selected) Modifier.border(1.dp, c.blue.copy(alpha = 0.45f), RoundedCornerShape(10.dp)) else Modifier)
+            .ecoPressable(scaleTo = 0.93f, onClick = onClick)
+            .padding(vertical = 3.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            date.dayOfMonth.toString(),
+            style = EcoType.Micro.copy(fontSize = 12.sp),
+            color = if (isToday) c.blueDeep else c.ink,
+        )
+        if (expenseCents > 0L) {
+            Spacer(Modifier.height(1.dp))
+            Text(
+                "-${Money.formatYuanCompact(expenseCents)}",
+                style = EcoType.Micro.copy(fontSize = 7.5.sp, lineHeight = 9.sp),
+                color = c.clay,
+                maxLines = 1,
+                softWrap = false,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Clip,
+            )
+        }
+    }
+}
+
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.BudgetTotal(
+    label: String,
+    value: String,
+    color: Color,
+) {
+    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(label, style = EcoType.Micro, color = MaterialTheme.eco.quiet)
+        Spacer(Modifier.height(2.dp))
+        Text(value, style = EcoType.RowTitle.copy(fontSize = 11.5.sp), color = color, maxLines = 1)
+    }
+}
+
+@Composable
+private fun ModeRemaining(
+    s: Budget.Snapshot,
+    period: MonthPeriod,
+    viewedDate: LocalDate,
+    isViewingToday: Boolean,
+    ringLabel: String,
+    dayAllowanceCents: Long,
+    daySpentCents: Long,
+) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
         // 原型环径 306：只受宽度限制，不再被高度压小（小屏按 84% 宽兜底）
         val ringSize = min(maxWidth.value * 0.84f, 306f).coerceAtLeast(176f).dp
@@ -422,16 +758,26 @@ private fun ModeRemaining(s: Budget.Snapshot, period: MonthPeriod, today: LocalD
         ) {
             // 环在「顶部」与「本日剩余」之间居中：上下留白相等
             Spacer(Modifier.weight(1f))
-            BudgetRing(s = s, period = period, today = today, size = ringSize)
+            BudgetRing(s = s, period = period, today = viewedDate, size = ringSize, label = ringLabel)
             Spacer(Modifier.weight(0.35f))
-            TodayCard(s = s)
+            TodayCard(
+                leftCents = dayAllowanceCents - daySpentCents,
+                allowanceCents = dayAllowanceCents,
+                isToday = isViewingToday,
+            )
             Spacer(Modifier.weight(0.93f))
         }
     }
 }
 
 @Composable
-private fun BudgetRing(s: Budget.Snapshot, period: MonthPeriod, today: LocalDate, size: Dp) {
+private fun BudgetRing(
+    s: Budget.Snapshot,
+    period: MonthPeriod,
+    today: LocalDate,
+    size: Dp,
+    label: String,
+) {
     val c = MaterialTheme.eco
     val tone = when (s.tone) {
         Budget.Tone.OK -> c.jade
@@ -444,8 +790,10 @@ private fun BudgetRing(s: Budget.Snapshot, period: MonthPeriod, today: LocalDate
         Budget.Tone.LOW -> c.clayHi
     }
     val ratio = s.remainingRatio.coerceIn(0f, 1f)
-    val daysLeft = period.daysLeft(today)
-    val timeRatio = (daysLeft.toFloat() / period.days.coerceAtLeast(1)).coerceIn(0f, 1f)
+    // 回看已结束的月份时剩余天数按 0 显示（时间环画满），避免出现「1 天」这种误导
+    val ended = !period.endExclusive.isAfter(today)
+    val daysLeft = if (ended) 0 else period.daysLeft(today)
+    val timeRatio = if (ended) 1f else (daysLeft.toFloat() / period.days.coerceAtLeast(1)).coerceIn(0f, 1f)
     // 原型：液面 1.1s、时间环稍慢地画出来（每次进入首页都从 0 重播）
     val drawn = remember { Animatable(0f) }
     val timeDrawn = remember { Animatable(0f) }
@@ -552,7 +900,7 @@ private fun BudgetRing(s: Budget.Snapshot, period: MonthPeriod, today: LocalDate
             )
         }
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Text("本月剩余", style = EcoType.MeterLabel, color = c.muted)
+            Text(label, style = EcoType.MeterLabel, color = c.muted)
             Spacer(Modifier.height(4.dp))
             EcoCountUpMoney(
                 cents = s.remainingCents,
@@ -569,7 +917,7 @@ private fun BudgetRing(s: Budget.Snapshot, period: MonthPeriod, today: LocalDate
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "$daysLeft 天",
+                if (daysLeft > 0) "$daysLeft 天" else "已结束",
                 style = EcoType.Pill.copy(fontSize = 11.sp, fontWeight = FontWeight.Bold),
                 color = c.blueDeep,
             )
@@ -578,7 +926,7 @@ private fun BudgetRing(s: Budget.Snapshot, period: MonthPeriod, today: LocalDate
 }
 
 @Composable
-private fun TodayCard(s: Budget.Snapshot) {
+private fun TodayCard(leftCents: Long, allowanceCents: Long, isToday: Boolean) {
     val c = MaterialTheme.eco
     // 原型 starBreath 3.5s：星星在 .9→1.15 之间呼吸并轻微旋转
     val star = rememberInfiniteTransition(label = "today-star")
@@ -591,10 +939,10 @@ private fun TodayCard(s: Budget.Snapshot) {
         ),
         label = "today-star-phase",
     )
-    val over = s.todayLeftCents < 0
+    val over = leftCents < 0
     val tone = when {
         over -> c.clay
-        s.todayLeftCents <= s.suggestedDailyCents * 0.25f -> c.amber
+        allowanceCents > 0L && leftCents <= allowanceCents * 0.25f -> c.amber
         else -> c.ink
     }
     Box(
@@ -605,19 +953,31 @@ private fun TodayCard(s: Budget.Snapshot) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Text(
-                    if (over) "今日已超支" else "本日剩余",
+                    when {
+                        over -> if (isToday) "今日已超支" else "当日超支"
+                        else -> if (isToday) "本日剩余" else "当日结余"
+                    },
                     style = EcoType.AssetLabel.copy(fontSize = 10.sp),
                     color = c.muted,
                 )
                 Spacer(Modifier.height(4.dp))
                 EcoCountUpMoney(
-                    cents = if (over) -s.todayLeftCents else s.todayLeftCents,
+                    cents = abs(leftCents),
                     style = EcoType.TodayAmount,
                     color = tone,
                     widthLimit = 240.dp,
                     minSize = 26.sp,
                 )
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(5.dp))
+                // 「日预算余额 / 日预算」小字：让当天的额度与结余一眼可对照
+                Text(
+                    "日预算余额 ${Money.formatYuanGroupedFixed(leftCents)} / ${Money.formatYuanGroupedFixed(allowanceCents)}",
+                    style = EcoType.PageNote.copy(fontSize = 8.5.sp),
+                    color = if (over) c.clay.copy(alpha = 0.9f) else c.quiet,
+                    maxLines = 1,
+                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                )
+                Spacer(Modifier.height(4.dp))
                 Canvas(Modifier.width(92.dp).height(8.dp)) {
                     val mid = size.width / 2
                     drawLine(c.jade.copy(alpha = 0.55f), Offset(0f, mid), Offset(mid - 12f, mid), 1f)

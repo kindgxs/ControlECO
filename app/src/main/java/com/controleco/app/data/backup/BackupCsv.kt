@@ -15,6 +15,7 @@ import com.controleco.app.data.db.TxType
 import com.controleco.app.data.plan.InstallmentMath
 import com.controleco.app.data.plan.RecurringMath
 import com.controleco.app.util.Money
+import org.json.JSONArray
 import org.json.JSONObject
 import java.time.Instant
 import java.time.LocalDate
@@ -606,6 +607,8 @@ object BackupCsv {
                 "i" -> wrapper.put("v", raw.toIntOrNull() ?: 0)
                 "l" -> wrapper.put("v", raw.toLongOrNull() ?: 0L)
                 "f" -> wrapper.put("v", raw.toDoubleOrNull() ?: 0.0)
+                // 字符串集合（监听的 App 名单等）：CSV 里存 JSON 数组文本
+                "ss" -> wrapper.put("v", runCatching { JSONArray(raw) }.getOrElse { JSONArray() })
                 else -> wrapper.put("v", raw)
             }
             settings.put(key, wrapper)

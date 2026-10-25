@@ -175,6 +175,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     /** 日预算金额（0 = 未设置；是否生效看 [dailyBudgetMode]） */
     val dailyBudgetCents: StateFlow<Long> = _dailyBudgetAmount
 
+    /** 全局月预算金额（原始输入，不含某月独立设置；日预算模式下由调用方按天数折算） */
+    val monthlyBudgetAmountCents: StateFlow<Long> = _monthlyBudgetAmount
+
     // ---------- 设置：按月预算（功能5） ----------
 
     /** 各月独立预算（key = 会计月标签）；没有单独设置的月份回落到全局预算 */
@@ -485,6 +488,63 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         val end = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
         txDao.observeSpendingTotal(start, end)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    // ---------- 首页预算页：查看日期（回看某个月/某一天） ----------
+
+    /**
+     * 首页「预算」页正在查看的日期；null = 跟随今天。
+     * 只影响首页预算视图（环 + 本日剩余 + 月历），不动账单页/统计页的翻月状态。
+     */
+    private val _homeBudgetDate = MutableStateFlow<LocalDate?>(null)
+    val homeBudgetDate: StateFlow<LocalDate?> = _homeBudgetDate
+
+    fun setHomeBudgetDate(date: LocalDate?) {
+        _homeBudgetDate.value = date
+    }
+
+    private val homeBudgetViewDate: Flow<LocalDate> =
+        combine(_homeBudgetDate, todayRef) { picked, today -> picked ?: today }
+
+    /** 查看日期所在的会计月（首页预算页的环/文案都按它算） */
+    val homeBudgetPeriod: StateFlow<MonthPeriod> =
+        combine(homeBudgetViewDate, _monthStartDay) { date, startDay -> MonthPeriod.of(date, startDay) }
+            .stateIn(
+                viewModelScope,
+                SharingStarted.WhileSubscribed(5_000),
+                MonthPeriod.of(LocalDate.now(zone), _monthStartDay.value),
+            )
+
+    /** 查看区间内的全部账单行（预算页月历按天汇总用） */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val homeBudgetRows: StateFlow<List<TransactionRow>?> = homeBudgetPeriod.flatMapLatest { period ->
+        val (start, end) = period.toMillisRange(zone)
+        txDao.observeRows(start, end).map { rows -> rows.filter { it.countInStats } }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** 查看区间内的未退款支出（口径同首页「本月支出」） */
+    val homeBudgetMonthSpent: StateFlow<Long?> = homeBudgetRows
+        .map { rows -> rows?.sumOf { DepositMath.expenseCentsOf(it) } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** 查看日期当天的未退款支出（预算页「本日剩余」） */
+    val homeBudgetDaySpent: StateFlow<Long?> = combine(homeBudgetViewDate, homeBudgetRows) { date, rows ->
+        rows?.filter { row ->
+            java.time.Instant.ofEpochMilli(row.timestamp).atZone(zone).toLocalDate() == date
+        }?.sumOf { DepositMath.expenseCentsOf(it) }
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** 预算日历用：查看日期所在**自然月**的账单行（与账单页日历经度一致） */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val homeBudgetCalendarRows: StateFlow<List<TransactionRow>?> =
+        homeBudgetViewDate
+            .map { YearMonth.from(it) }
+            .distinctUntilChanged()
+            .flatMapLatest { month ->
+                val start = month.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                val end = month.plusMonths(1).atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+                txDao.observeRows(start, end).map { rows -> rows.filter { it.countInStats } }
+            }
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     // ---------- 月份 ----------
 
@@ -1327,6 +1387,31 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         merchantRuleDao.observeRecent()
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
 
+    /** 手动编辑规则时校验/归一化商户关键字；无效返回 null */
+    fun normalizeMerchantKey(raw: String): String? = MerchantRules.keyOf(raw, "")
+
+    /** 手动修改学到的规则（关键字 / 方向 / 分类 / 账户），保留命中次数 */
+    fun updateMerchantRule(id: Long, matchKey: String, type: TxType, categoryId: Long, accountId: Long?) {
+        val key = MerchantRules.keyOf(matchKey, "") ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val existing = merchantRuleDao.getAll().firstOrNull { it.id == id } ?: return@launch
+            if (existing.matchKey == key && existing.type == type &&
+                existing.categoryId == categoryId && existing.accountId == accountId
+            ) {
+                return@launch
+            }
+            merchantRuleDao.upsert(
+                existing.copy(
+                    matchKey = key,
+                    type = type,
+                    categoryId = categoryId,
+                    accountId = accountId,
+                    updatedAt = System.currentTimeMillis(),
+                ),
+            )
+        }
+    }
+
     fun deleteMerchantRule(id: Long) {
         viewModelScope.launch(Dispatchers.IO) { merchantRuleDao.deleteById(id) }
     }
@@ -1808,23 +1893,83 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.i("settings", "depositShowAll=$all")
     }
 
-    /** 每月存款趋势的起始月：全部 = 最早一笔账单所在月；区间 = 最近 N 个月（不早于计划开始月） */
-    @OptIn(ExperimentalCoroutinesApi::class)
-    private val depositStartMonth: Flow<YearMonth> = combine(
-        currentPeriod,
+    /**
+     * 「区间」模式下用户手动指定的起止年月（可只给一端）：
+     * 设定后优先于「最近 N 个月」，方便直接看某个具体年月区间。
+     */
+    private val _depositRangeStart = MutableStateFlow(loadDepositRangeBound(KEY_DEPOSIT_RANGE_START))
+    val depositRangeStart: StateFlow<YearMonth?> = _depositRangeStart
+
+    private val _depositRangeEnd = MutableStateFlow(loadDepositRangeBound(KEY_DEPOSIT_RANGE_END))
+    val depositRangeEnd: StateFlow<YearMonth?> = _depositRangeEnd
+
+    /** 设置手动年月区间；两端都传 null = 清除，回到「最近 N 个月至本月」 */
+    fun setDepositRangeBounds(start: YearMonth?, end: YearMonth?) {
+        val s = start
+        val e = end
+        if (s != null && e != null && s.isAfter(e)) {
+            // 起止颠倒时自动纠正，避免出现空区间
+            storeDepositRangeBound(KEY_DEPOSIT_RANGE_START, e)
+            storeDepositRangeBound(KEY_DEPOSIT_RANGE_END, s)
+        } else {
+            storeDepositRangeBound(KEY_DEPOSIT_RANGE_START, s)
+            storeDepositRangeBound(KEY_DEPOSIT_RANGE_END, e)
+        }
+        AppLog.i("settings", "depositRange=$s..$e")
+    }
+
+    private fun storeDepositRangeBound(key: String, month: YearMonth?) {
+        val editor = prefs.edit()
+        if (month != null) editor.putString(key, month.toString()) else editor.remove(key)
+        editor.apply()
+        val flow = if (key == KEY_DEPOSIT_RANGE_START) _depositRangeStart else _depositRangeEnd
+        flow.value = month
+    }
+
+    private fun loadDepositRangeBound(key: String): YearMonth? =
+        prefs.getString(key, null)?.let { raw -> runCatching { YearMonth.parse(raw) }.getOrNull() }
+
+    private data class DepositWindow(
+        val planStart: YearMonth?,
+        val showAll: Boolean,
+        val rangeMonths: Int,
+        val explicitStart: YearMonth?,
+        val explicitEnd: YearMonth?,
+    )
+
+    private val depositWindow: Flow<DepositWindow> = combine(
         _depositPlanStart,
         _depositShowAll,
         _depositRangeMonths,
+        _depositRangeStart,
+        _depositRangeEnd,
+    ) { planStart, showAll, rangeMonths, start, end ->
+        DepositWindow(planStart, showAll, rangeMonths, start, end)
+    }
+
+    /** 每月存款趋势的结束月：手动区间优先（不晚于本月），否则就是本月 */
+    private val depositEndMonth: Flow<YearMonth> = combine(currentPeriod, depositWindow) { period, w ->
+        val now = YearMonth.from(period.start)
+        w.explicitEnd?.takeIf { !it.isAfter(now) } ?: now
+    }.distinctUntilChanged()
+
+    /** 每月存款趋势的起始月：全部 = 最早一笔账单所在月；区间 = 手动年月或最近 N 个月（不早于计划开始月） */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val depositStartMonth: Flow<YearMonth> = combine(
+        currentPeriod,
+        depositWindow,
+        depositEndMonth,
         txDao.observeEarliestTimestamp(),
-    ) { period, planStart, showAll, rangeMonths, earliest ->
-        val endMonth = YearMonth.from(period.start)
-        val windowStart = endMonth.minusMonths(rangeMonths.toLong() - 1L)
-        val planMonth = planStart?.takeIf { !it.isAfter(endMonth) }
+    ) { period, w, endMonth, earliest ->
+        val windowStart = endMonth.minusMonths(w.rangeMonths.toLong() - 1L)
+        val planMonth = w.planStart?.takeIf { !it.isAfter(endMonth) }
         val earliestMonth = earliest?.let {
             YearMonth.from(java.time.Instant.ofEpochMilli(it).atZone(zone).toLocalDate())
         }?.takeIf { !it.isAfter(endMonth) }
+        val explicit = w.explicitStart?.takeIf { !it.isAfter(endMonth) }
         when {
-            showAll -> earliestMonth ?: planMonth ?: windowStart
+            w.showAll -> earliestMonth ?: planMonth ?: windowStart
+            explicit != null -> explicit
             // 区间 = 最近 N 个月；设了计划开始月时从计划月开始，但不会往前超过 N 个月
             planMonth != null -> if (planMonth.isBefore(windowStart)) windowStart else planMonth
             else -> windowStart
@@ -1833,9 +1978,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 至少覆盖当前显示范围的账单行：存款趋势与每月新增存款的数据源 */
     @OptIn(ExperimentalCoroutinesApi::class)
-    val depositRows: StateFlow<List<TransactionRow>?> = combine(depositStartMonth, currentPeriod) { startMonth, period ->
+    val depositRows: StateFlow<List<TransactionRow>?> = combine(depositStartMonth, depositEndMonth) { startMonth, endMonth ->
         val start = startMonth.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
-        val end = YearMonth.from(period.start).plusMonths(1).atDay(1)
+        val end = endMonth.plusMonths(1).atDay(1)
             .atStartOfDay(zone).toInstant().toEpochMilli()
         start to end
     }.distinctUntilChanged().flatMapLatest { (start, end) ->
@@ -1849,18 +1994,18 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    /** 含当月的连续存款趋势（缺数据的月补 0），区间随「存款计划开始月 / 全部」设置变化 */
+    /** 含当月的连续存款趋势（缺数据的月补 0），区间随「存款计划开始月 / 全部 / 手动年月」设置变化 */
     @OptIn(ExperimentalCoroutinesApi::class)
     val depositTrend: StateFlow<List<DepositMath.MonthSaving>?> = combine(
         depositRows,
         depositStartMonth,
-        currentPeriod,
-    ) { rows, startMonth, period ->
+        depositEndMonth,
+    ) { rows, startMonth, endMonth ->
         rows?.filter { it.countInStats }?.let {
             DepositMath.trendBetween(
                 DepositMath.monthlySavings(it, zone),
                 startMonth,
-                YearMonth.from(period.start),
+                endMonth,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -2340,8 +2485,10 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     it.readBytes()
                 } ?: throw IllegalStateException("无法读取所选文件")
                 val count = BackupStore.importFile(getApplication(), db, prefs, bytes)
-                // 设置可能变了（月首日 / 货币 / 预算），重新载入内存状态
+                // 设置可能变了（月首日 / 货币 / 预算 / 监听的 App），重新载入内存状态
                 reloadSettingsFromPrefs()
+                // 监听名单可能被还原覆盖，立刻同步运行时无障碍过滤
+                AccBookAccessibilityService.refreshServiceInfo()
                 AppLog.i("backup", "restored $count transactions")
                 mainResult(onDone, null)
             } catch (e: Exception) {
@@ -2366,8 +2513,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         _depositMonthGoals.value = loadDepositMonthGoals()
         _depositPlanStart.value = loadDepositPlanStart()
         _depositRangeMonths.value = loadDepositRangeMonths()
+        _depositRangeStart.value = loadDepositRangeBound(KEY_DEPOSIT_RANGE_START)
+        _depositRangeEnd.value = loadDepositRangeBound(KEY_DEPOSIT_RANGE_END)
         _depositShowAll.value = prefs.getBoolean(KEY_DEPOSIT_SHOW_ALL, false)
         _homeQuickAddEnabled.value = prefs.getBoolean(KEY_HOME_QUICK_ADD, true)
+        _homeModeOrder.value = loadHomeModeOrder()
         _subcategoryRollupMode.value = SubcategoryRollupMode.of(prefs.getString(KEY_SUBCAT_ROLLUP, null))
     }
 
@@ -2386,6 +2536,43 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean(KEY_HOME_QUICK_ADD, enabled).apply()
         _homeQuickAddEnabled.value = enabled
         AppLog.i("settings", "homeQuickAdd=$enabled")
+    }
+
+    // ---------- 首页三个页面的显示顺序（预算 / 分类 / 资产） ----------
+
+    private val _homeModeOrder = MutableStateFlow(loadHomeModeOrder())
+
+    /** 首页翻转页顺序：元素取值为 "budget" / "category" / "asset" */
+    val homeModeOrder: StateFlow<List<String>> = _homeModeOrder
+
+    fun setHomeModeOrder(order: List<String>) {
+        val normalized = normalizeHomeModeOrder(order)
+        if (normalized == _homeModeOrder.value) return
+        prefs.edit().putString(KEY_HOME_MODE_ORDER, normalized.joinToString(",")).apply()
+        _homeModeOrder.value = normalized
+        AppLog.i("settings", "homeModeOrder=${normalized.joinToString(",")}")
+    }
+
+    /** 上移 / 下移一个页面（delta = -1 / +1），越界不动 */
+    fun moveHomeMode(id: String, delta: Int) {
+        val current = _homeModeOrder.value
+        val from = current.indexOf(id)
+        if (from < 0) return
+        val to = (from + delta).coerceIn(0, current.lastIndex)
+        if (to == from) return
+        setHomeModeOrder(current.toMutableList().apply { add(to, removeAt(from)) })
+    }
+
+    private fun loadHomeModeOrder(): List<String> {
+        val raw = prefs.getString(KEY_HOME_MODE_ORDER, null) ?: return normalizeHomeModeOrder(emptyList())
+        return normalizeHomeModeOrder(raw.split(','))
+    }
+
+    /** 去重并补齐缺失项，保证永远是 3 个且互不重复 */
+    private fun normalizeHomeModeOrder(raw: List<String>): List<String> {
+        val defaults = listOf(HOME_MODE_BUDGET, HOME_MODE_CATEGORY, HOME_MODE_ASSET)
+        val picked = raw.map { it.trim() }.filter { it in defaults }.distinct()
+        return picked + defaults.filter { it !in picked }
     }
 
     // ---------- 首页资产：共用额度组显示哪张卡 ----------
@@ -2443,11 +2630,17 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_DEPOSIT_PLAN_START = "deposit_plan_start_month"
         const val KEY_DEPOSIT_RANGE_MONTHS = "deposit_range_months"
         const val KEY_DEPOSIT_SHOW_ALL = "deposit_show_all_months"
+        const val KEY_DEPOSIT_RANGE_START = "deposit_range_start_month"
+        const val KEY_DEPOSIT_RANGE_END = "deposit_range_end_month"
         const val DEFAULT_DEPOSIT_RANGE_MONTHS = 12
         const val MIN_DEPOSIT_RANGE_MONTHS = 1
         const val MAX_DEPOSIT_RANGE_MONTHS = 60
         const val KEY_SUBCAT_ROLLUP = "subcategory_rollup_mode"
         const val KEY_HOME_QUICK_ADD = "home_quick_add_enabled"
+        const val KEY_HOME_MODE_ORDER = "home_mode_order"
+        const val HOME_MODE_BUDGET = "budget"
+        const val HOME_MODE_CATEGORY = "category"
+        const val HOME_MODE_ASSET = "asset"
         const val KEY_ASSET_CARD_PICK = "asset_card_pick"
         const val MODE_PERCENT = "percent"
         const val MODE_AMOUNT = "amount"

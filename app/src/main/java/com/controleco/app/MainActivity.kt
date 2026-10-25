@@ -54,7 +54,10 @@ class MainActivity : ComponentActivity() {
                     fontScale = base.fontScale.coerceAtMost(1.25f),
                 ),
             ) {
-                AccBookTheme(accent = AccentThemeStore.current) {
+                AccBookTheme(
+                    accent = AccentThemeStore.current,
+                    customBase = AccentThemeStore.customBase,
+                ) {
                     val vm: LedgerViewModel = viewModel()
                     // 「显示动画」关掉后连开屏也不播，直接进内容
                     val animations = AnimationPrefs.enabled

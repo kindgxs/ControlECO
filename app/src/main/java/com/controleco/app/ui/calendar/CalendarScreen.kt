@@ -3,6 +3,7 @@ package com.controleco.app.ui.calendar
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,11 +37,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
+import com.controleco.app.data.PeriodMode
 import com.controleco.app.data.calendar.CalendarMath
 import com.controleco.app.data.calendar.DayMoney
 import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.EcoIcons
+import com.controleco.app.ui.common.PeriodPickerSheet
 import com.controleco.app.ui.eco.EcoEmpty
 import com.controleco.app.ui.eco.EcoIconButton
 import com.controleco.app.ui.eco.EcoPane
@@ -81,6 +84,7 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
 
     var mode by rememberSaveable { mutableStateOf(CalendarMode.BOTH.ordinal) }
     var selectedDate by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
+    var pickerOpen by remember { mutableStateOf(false) }
 
     val monthRows = rows.orEmpty()
     // 日历的日收支与月汇总属于统计口径：剔除「不计入账单和收支统计」的记录；
@@ -111,12 +115,23 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 .padding(horizontal = 20.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                "${month.year} 年 ${month.monthValue} 月",
-                style = EcoType.SectionTitle,
-                color = c.ink,
-                modifier = Modifier.weight(1f),
-            )
+            Row(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(9.dp))
+                    .clickable { pickerOpen = true }
+                    .padding(vertical = 4.dp, horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "${month.year} 年 ${month.monthValue} 月",
+                    style = EcoType.SectionTitle,
+                    color = c.ink,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.width(5.dp))
+                Text("▾", style = EcoType.Micro.copy(fontSize = 10.sp), color = c.quiet)
+            }
             EcoIconButton(
                 icon = EcoIcons.Back,
                 contentDescription = "上个月",
@@ -166,7 +181,7 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .padding(start = 6.dp, end = 6.dp, top = 2.dp, bottom = 6.dp),
+                        .padding(start = 6.dp, end = 6.dp, top = 0.dp, bottom = 4.dp),
                 ) {
                     repeat(weeks) { week ->
                         Row(Modifier.fillMaxWidth()) {
@@ -185,7 +200,7 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                                         modifier = Modifier.weight(1f),
                                     )
                                 } else {
-                                    Spacer(Modifier.weight(1f).height(58.dp))
+                                    Spacer(Modifier.weight(1f).height(52.dp))
                                 }
                             }
                         }
@@ -251,6 +266,16 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         }
         Spacer(Modifier.height(28.dp))
     }
+
+    if (pickerOpen) {
+        PeriodPickerSheet(
+            mode = PeriodMode.MONTH,
+            current = month,
+            onSelectMonth = { vm.setCalendarMonth(it) },
+            onSelectYear = { year -> vm.setCalendarMonth(month.withYear(year)) },
+            onDismiss = { pickerOpen = false },
+        )
+    }
 }
 
 @Composable
@@ -274,13 +299,13 @@ private fun DayCell(
     )
     Column(
         modifier
-            .height(58.dp)
-            .padding(2.dp)
+            .height(52.dp)
+            .padding(1.5.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(bg)
             .then(if (selected) Modifier.border(1.dp, c.blue.copy(alpha = 0.45f), RoundedCornerShape(10.dp)) else Modifier)
             .ecoPressable(scaleTo = 0.93f, onClick = onClick)
-            .padding(vertical = 5.dp),
+            .padding(vertical = 3.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Text(
@@ -341,8 +366,8 @@ private fun DayRow(row: TransactionRow, categoryName: String, parentName: String
     Row(
         Modifier
             .fillMaxWidth()
-            .heightIn(min = 56.dp)
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .heightIn(min = 50.dp)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {

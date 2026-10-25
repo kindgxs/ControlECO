@@ -536,6 +536,8 @@ fun EcoConfirm(
     onDismiss: () -> Unit,
     dismissText: String = "取消",
     danger: Boolean = false,
+    /** 默认选「否」：高亮取消按钮、弱化确认按钮（删除类操作使用） */
+    defaultDismiss: Boolean = false,
 ) {
     val c = MaterialTheme.eco
     EcoDialog(onDismiss = onDismiss) {
@@ -545,14 +547,28 @@ fun EcoConfirm(
             Text(body, style = EcoType.ModalBody, color = c.muted)
             Spacer(Modifier.height(20.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                EcoGhostButton(text = dismissText, onClick = onDismiss, modifier = Modifier.weight(1f), height = 40.dp)
-                if (danger) {
+                if (defaultDismiss) {
                     Box(Modifier.weight(1f)) {
-                        EcoDangerButton(text = confirmText, onClick = onConfirm, height = 40.dp)
+                        EcoPrimaryButton(text = dismissText, onClick = onDismiss, height = 40.dp)
+                    }
+                    Box(Modifier.weight(1f)) {
+                        EcoGhostButton(
+                            text = confirmText,
+                            onClick = onConfirm,
+                            height = 40.dp,
+                            color = if (danger) c.clay else c.blueDeep,
+                        )
                     }
                 } else {
-                    Box(Modifier.weight(1f)) {
-                        EcoPrimaryButton(text = confirmText, onClick = onConfirm, height = 40.dp)
+                    EcoGhostButton(text = dismissText, onClick = onDismiss, modifier = Modifier.weight(1f), height = 40.dp)
+                    if (danger) {
+                        Box(Modifier.weight(1f)) {
+                            EcoDangerButton(text = confirmText, onClick = onConfirm, height = 40.dp)
+                        }
+                    } else {
+                        Box(Modifier.weight(1f)) {
+                            EcoPrimaryButton(text = confirmText, onClick = onConfirm, height = 40.dp)
+                        }
                     }
                 }
             }

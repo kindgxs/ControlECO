@@ -511,8 +511,8 @@ private fun tinted(base: Long, tint: Color, mix: Float): Long =
  * 现在整组都由强调色派生：纸面 3% 着色、卡片面 1%（几乎是纯白）、
  * 分隔线/轨道 12–25%。面积越大越白，只有线条和次级面才看得出色相。
  */
-private fun tintedLightNeutrals(accent: EcoAccent): Neutrals {
-    val t = Color(accent.light.blue)
+private fun tintedLightNeutrals(accent: EcoAccent, tintOverride: Color? = null): Neutrals {
+    val t = tintOverride ?: Color(accent.light.blue)
     return Neutrals(
         paper = nearWhite(t, 0.030f),
         paperDeep = nearWhite(t, 0.070f),
@@ -531,8 +531,8 @@ private fun tintedLightNeutrals(accent: EcoAccent): Neutrals {
 }
 
 /** 深色中性面：同样随主题偏色，避免任何主题下都是一片深青。 */
-private fun tintedDarkNeutrals(accent: EcoAccent): Neutrals {
-    val t = Color(accent.light.blue)
+private fun tintedDarkNeutrals(accent: EcoAccent, tintOverride: Color? = null): Neutrals {
+    val t = tintOverride ?: Color(accent.light.blue)
     return Neutrals(
         paper = tinted(0xFF0A0F10, t, 0.10f),
         paperDeep = tinted(0xFF0D1416, t, 0.12f),
@@ -565,26 +565,75 @@ private val GRAPHITE_DARK = Neutrals(
     0xFF333333, 0xFF474747, 0xFF343434,
 )
 
-private fun neutralsFor(dark: Boolean, accent: EcoAccent): Neutrals = if (dark) {
+private fun neutralsFor(dark: Boolean, accent: EcoAccent, tintOverride: Color? = null): Neutrals = if (dark) {
     when (accent.neutralDark) {
         Neutral.GRAPHITE -> GRAPHITE_DARK
-        else -> tintedDarkNeutrals(accent)
+        else -> tintedDarkNeutrals(accent, tintOverride)
     }
 } else {
     when (accent.neutral) {
         Neutral.WHITE -> WHITE_LIGHT
-        else -> tintedLightNeutrals(accent)
+        else -> tintedLightNeutrals(accent, tintOverride)
     }
 }
 
-fun ecoColors(dark: Boolean, accent: EcoAccent): EcoColors {
-    val b = if (dark) accent.dark else accent.light
+// ---------- 自定义主题色 ----------
+
+/** 颜色的色相（0..360） */
+internal fun hueOf(color: Color): Float = rgbToHsv(color.red, color.green, color.blue)[0]
+
+/** 颜色的饱和度（0..1） */
+internal fun saturationOf(color: Color): Float = rgbToHsv(color.red, color.green, color.blue)[1]
+
+/** 只缩放饱和度，保留色相与明度 */
+private fun Color.scaledSaturation(scale: Float): Color {
+    val hsv = rgbToHsv(red, green, blue)
+    val rgb = hsvToRgb(hsv[0], (hsv[1] * scale).coerceIn(0f, 1f), hsv[2])
+    return Color(rgb[0], rgb[1], rgb[2])
+}
+
+private fun Long.scaledSaturation(scale: Float): Long =
+    Color(this).scaledSaturation(scale).toArgb().toLong() and 0xFFFFFFFFL
+
+private fun Family.hueShiftedAndScaled(shift: Float, satScale: Float): Family = Family(
+    blue = blue.rotatedBy(shift).scaledSaturation(satScale),
+    deep = deep.rotatedBy(shift).scaledSaturation(satScale),
+    mid = mid.rotatedBy(shift).scaledSaturation(satScale),
+    hi = hi.rotatedBy(shift).scaledSaturation(satScale),
+    soft = soft.rotatedBy(shift).scaledSaturation(satScale),
+    wash = wash.rotatedBy(shift).scaledSaturation(satScale),
+)
+
+/**
+ * 自定义主题色：[customBase] 只决定「色相 + 饱和度」，
+ * 明度骨架沿用当前预设（[EcoAccent]），因此对比度、层次关系仍然可预期，
+ * 不会因为用户挑了一个很亮/很暗的颜色就出现看不清的按钮或封面。
+ */
+fun ecoColors(dark: Boolean, accent: EcoAccent, customBase: Color? = null): EcoColors {
+    val ref = Color(accent.light.blue)
+    val hueShift = if (customBase != null) hueOf(customBase) - hueOf(ref) else 0f
+    val satScale = if (customBase != null) {
+        (saturationOf(customBase) / saturationOf(ref).coerceAtLeast(0.05f)).coerceIn(0.2f, 1.3f)
+    } else {
+        1f
+    }
+    val b = if (customBase == null) {
+        if (dark) accent.dark else accent.light
+    } else {
+        (if (dark) accent.dark else accent.light).hueShiftedAndScaled(hueShift, satScale)
+    }
     val s = b.rotated(accent.secondaryShift)
-    val n = neutralsFor(dark, accent)
+    val n = neutralsFor(dark, accent, customBase)
     // 纯白主题是无彩色定位，封面/按钮不跟着加饱和，反而要压掉原始那点蓝味
     val monochrome = accent.neutral == Neutral.WHITE && accent.neutralDark == Neutral.GRAPHITE
-    val heroSat = if (monochrome) NEUTRAL_SAT_SCALE else HERO_SAT_SCALE
-    val gradSat = if (monochrome) NEUTRAL_SAT_SCALE else GRAD_SAT_SCALE
+    val heroSat = (if (monochrome) NEUTRAL_SAT_SCALE else HERO_SAT_SCALE) * satScale
+    val gradSat = (if (monochrome) NEUTRAL_SAT_SCALE else GRAD_SAT_SCALE) * satScale
+    val heroA = if (customBase == null) accent.heroA else rotateHue(accent.heroA, hueShift)
+    val heroB = if (customBase == null) accent.heroB else rotateHue(accent.heroB, hueShift)
+    val heroC = if (customBase == null) accent.heroC else rotateHue(accent.heroC, hueShift)
+    val gradA = if (customBase == null) accent.accentGradA else rotateHue(accent.accentGradA, hueShift)
+    val gradB = if (customBase == null) accent.accentGradB else rotateHue(accent.accentGradB, hueShift)
+    val gradC = if (customBase == null) accent.accentGradC else rotateHue(accent.accentGradC, hueShift)
     return EcoColors(
         isDark = dark,
         accent = accent,
@@ -627,12 +676,12 @@ fun ecoColors(dark: Boolean, accent: EcoAccent): EcoColors {
         claySoft = if (dark) Color(0xFF503C3B) else Color(0xFFFCEAE4),
         violet = if (dark) Color(0xFFC4B3DF) else Color(0xFF907BA8),
         violetSoft = if (dark) Color(0xFF3C354B) else Color(0xFFF1EAF5),
-        heroA = vividTone(accent.heroA, HERO_LUMA_A, heroSat),
-        heroB = vividTone(accent.heroB, HERO_LUMA_B, heroSat),
-        heroC = vividTone(accent.heroC, HERO_LUMA_C, heroSat),
-        accentGradA = vividTone(accent.accentGradA, GRAD_LUMA_A, gradSat),
-        accentGradB = vividTone(accent.accentGradB, GRAD_LUMA_B, gradSat),
-        accentGradC = vividTone(accent.accentGradC, GRAD_LUMA_C, gradSat),
+        heroA = vividTone(heroA, HERO_LUMA_A, heroSat),
+        heroB = vividTone(heroB, HERO_LUMA_B, heroSat),
+        heroC = vividTone(heroC, HERO_LUMA_C, heroSat),
+        accentGradA = vividTone(gradA, GRAD_LUMA_A, gradSat),
+        accentGradB = vividTone(gradB, GRAD_LUMA_B, gradSat),
+        accentGradC = vividTone(gradC, GRAD_LUMA_C, gradSat),
     )
 }
 
@@ -1101,11 +1150,13 @@ private val appShapes = Shapes(
 fun AccBookTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     accent: EcoAccent = EcoAccent.Tide,
+    /** 自定义主题色：只取色相 + 饱和度，明度骨架仍沿用 [accent] */
+    customBase: Color? = null,
     content: @Composable () -> Unit,
 ) {
-    val eco = ecoColors(darkTheme, accent)
+    val eco = ecoColors(darkTheme, accent, customBase)
     val colorScheme = if (darkTheme) darkScheme(eco) else lightScheme(eco)
-    val extended = if (darkTheme) darkAccBookColors() else lightAccBookColors()
+    val extended = if (darkTheme) darkAccBookColors(accent) else lightAccBookColors(accent)
     androidx.compose.runtime.CompositionLocalProvider(
         LocalEcoColors provides eco,
         LocalAccBookColors provides extended,

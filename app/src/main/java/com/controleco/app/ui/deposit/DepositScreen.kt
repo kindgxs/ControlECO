@@ -28,8 +28,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
+import com.controleco.app.data.PeriodMode
 import com.controleco.app.data.deposit.DepositMath
 import com.controleco.app.ui.common.EcoIcons
+import com.controleco.app.ui.common.PeriodPickerSheet
 import com.controleco.app.ui.eco.EcoAutoMoney
 import com.controleco.app.ui.eco.EcoChip
 import com.controleco.app.ui.eco.EcoEmpty
@@ -71,8 +73,14 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val planStart by vm.depositPlanStartMonth.collectAsStateWithLifecycle()
     val rangeMonths by vm.depositRangeMonths.collectAsStateWithLifecycle()
     val showAll by vm.depositShowAll.collectAsStateWithLifecycle()
+    val rangeStart by vm.depositRangeStart.collectAsStateWithLifecycle()
+    val rangeEnd by vm.depositRangeEnd.collectAsStateWithLifecycle()
     var showRangeSheet by remember { mutableStateOf(false) }
     var rangeDraft by remember { mutableStateOf(12) }
+    // 手动起止年月的草稿（0 = 选起始月，1 = 选结束月）
+    var draftStart by remember { mutableStateOf<YearMonth?>(null) }
+    var draftEnd by remember { mutableStateOf<YearMonth?>(null) }
+    var picking by remember { mutableStateOf(-1) }
     var goalText by remember(goal) {
         mutableStateOf(if (goal > 0L) Money.formatCents(goal) else "")
     }
@@ -149,10 +157,12 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             }
 
             item(key = "range") {
-                // 区间模式：月份数可手动调整（默认 12）；「全部」模式从最早一笔账单开始
+                // 区间模式：可手动指定起止年月，或按「最近 N 个月」；「全部」模式从最早一笔账单开始
                 val startMonth = trend.firstOrNull()?.month
                 val note = when {
                     showAll -> "当前显示全部月份：从最早一笔账单所在月到本月"
+                    rangeStart != null || rangeEnd != null -> "当前手动区间：${monthLabel(rangeStart ?: startMonth)} – " +
+                        "${monthLabel(rangeEnd ?: YearMonth.now())}"
                     startMonth != null -> "当前显示最近 $rangeMonths 个月：${startMonth.year} 年 " +
                         "${startMonth.monthValue} 月起至本月"
                     else -> "当前显示最近 $rangeMonths 个月"
@@ -169,9 +179,11 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     }
                     if (!showAll) {
                         EcoTextAction(
-                            text = "调整月份数",
+                            text = "调整区间",
                             onClick = {
                                 rangeDraft = rangeMonths
+                                draftStart = rangeStart
+                                draftEnd = rangeEnd
                                 showRangeSheet = true
                             },
                             modifier = Modifier.padding(start = 8.dp),
@@ -276,25 +288,68 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
         }
     }
 
-    // 区间模式：手动设置显示月数
+    // 区间模式：手动年月起止 + 最近 N 个月
     if (showRangeSheet) {
         val c = MaterialTheme.eco
         EcoSheet(
             onDismiss = { showRangeSheet = false },
-            title = "存款显示月份区间",
-            subtitle = "只影响「每月存款」列表显示多少个月，不影响统计与备份",
+            title = "存款显示区间",
+            subtitle = "只影响「每月存款」列表显示哪些月份，不影响统计与备份",
         ) {
             Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)) {
+                Text(
+                    "起止年月（优先于月数）",
+                    style = EcoType.RowTitle.copy(fontSize = 12.sp),
+                    color = c.ink,
+                )
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    EcoChip(
+                        text = draftStart?.let { monthLabel(it) } ?: "最早",
+                        selected = draftStart != null,
+                        onClick = {
+                            picking = 0
+                            showRangeSheet = false
+                        },
+                        height = 30.dp,
+                    )
+                    Text(
+                        " – ",
+                        style = EcoType.PageNote.copy(fontSize = 11.sp),
+                        color = c.quiet,
+                    )
+                    EcoChip(
+                        text = draftEnd?.let { monthLabel(it) } ?: "本月",
+                        selected = draftEnd != null,
+                        onClick = {
+                            picking = 1
+                            showRangeSheet = false
+                        },
+                        height = 30.dp,
+                    )
+                    Spacer(Modifier.weight(1f))
+                    if (draftStart != null || draftEnd != null) {
+                        EcoTextAction(
+                            text = "清除",
+                            onClick = {
+                                draftStart = null
+                                draftEnd = null
+                            },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "显示月数",
+                    style = EcoType.RowTitle.copy(fontSize = 12.sp),
+                    color = c.ink,
+                )
+                Spacer(Modifier.height(4.dp))
                 Row(
                     Modifier.fillMaxWidth().padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        "显示月数",
-                        style = EcoType.RowTitle.copy(fontSize = 12.sp),
-                        color = c.ink,
-                        modifier = Modifier.weight(1f),
-                    )
+                    Spacer(Modifier.weight(1f))
                     EcoIconButton(
                         icon = EcoIcons.Back,
                         contentDescription = "减少一个月",
@@ -316,6 +371,7 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         size = 30.dp,
                         enabled = rangeDraft < 60,
                     )
+                    Spacer(Modifier.weight(1f))
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -328,20 +384,62 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         )
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                EcoPageNote(
+                    "设了起止年月就按它显示；点「清除」后回到最近 N 个月（截至本月）。",
+                )
                 Spacer(Modifier.height(14.dp))
                 EcoPrimaryButton(
                     text = "保存显示区间",
                     onClick = {
+                        vm.setDepositRangeBounds(draftStart, draftEnd)
                         vm.setDepositRangeMonths(rangeDraft)
                         showRangeSheet = false
-                        EcoToast.show("已保存：每月存款显示最近 $rangeDraft 个月")
+                        EcoToast.show(
+                            if (draftStart != null || draftEnd != null) {
+                                "已保存：${monthLabel(draftStart ?: trend.firstOrNull()?.month)} – " +
+                                    "${monthLabel(draftEnd ?: YearMonth.now())}"
+                            } else {
+                                "已保存：每月存款显示最近 $rangeDraft 个月"
+                            },
+                        )
                     },
                 )
                 Spacer(Modifier.height(14.dp))
             }
         }
     }
+
+    if (picking >= 0) {
+        val fallbackStart = rangeStart ?: YearMonth.now().minusMonths(rangeMonths.toLong() - 1L)
+        PeriodPickerSheet(
+            mode = PeriodMode.MONTH,
+            current = if (picking == 0) fallbackStart else (rangeEnd ?: YearMonth.now()),
+            onSelectMonth = { month ->
+                if (picking == 0) draftStart = month else draftEnd = month
+                picking = -1
+                showRangeSheet = true
+            },
+            onSelectYear = { year ->
+                if (picking == 0) {
+                    draftStart = (draftStart ?: fallbackStart).withYear(year)
+                } else {
+                    draftEnd = (draftEnd ?: YearMonth.now()).withYear(year)
+                }
+                picking = -1
+                showRangeSheet = true
+            },
+            onDismiss = {
+                picking = -1
+                showRangeSheet = true
+            },
+        )
+    }
 }
+
+/** 区间文案：2025/12 */
+private fun monthLabel(month: YearMonth?): String =
+    month?.let { "${it.year}/${it.monthValue.toString().padStart(2, '0')}" } ?: "最早"
 
 /** 当月存款卡：新增金额 + 达成比例 + 目标进度 */
 @Composable

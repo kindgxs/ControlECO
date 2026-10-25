@@ -45,6 +45,9 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -67,12 +70,16 @@ import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.common.PeriodPickerSheet
 import com.controleco.app.ui.common.periodLabel
 import com.controleco.app.ui.eco.EcoAutoMoney
+import com.controleco.app.ui.eco.EcoChip
 import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPill
 import com.controleco.app.ui.eco.EcoPillTone
+import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoProgressBar
 import com.controleco.app.ui.eco.EcoSectionHead
 import com.controleco.app.ui.eco.EcoSegmented
+import com.controleco.app.ui.eco.EcoSheet
+import com.controleco.app.ui.eco.EcoTextAction
 import com.controleco.app.ui.eco.EcoTopBar
 import com.controleco.app.ui.eco.LocalAnimationsEnabled
 import com.controleco.app.ui.eco.ecoBottomContentPadding
@@ -118,6 +125,10 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
     val rollupMode by vm.subcategoryRollupMode.collectAsStateWithLifecycle()
     val depositTrend by vm.depositTrend.collectAsStateWithLifecycle()
     val depositGoal by vm.depositGoalCents.collectAsStateWithLifecycle()
+    val depositRangeMonths by vm.depositRangeMonths.collectAsStateWithLifecycle()
+    val depositShowAll by vm.depositShowAll.collectAsStateWithLifecycle()
+    val depositRangeStart by vm.depositRangeStart.collectAsStateWithLifecycle()
+    val depositRangeEnd by vm.depositRangeEnd.collectAsStateWithLifecycle()
     val currentSaving by vm.currentMonthSaving.collectAsStateWithLifecycle()
     val cardImageUri by vm.cardImageUri.collectAsStateWithLifecycle()
     val cardTransform by vm.cardTransform.collectAsStateWithLifecycle()
@@ -189,6 +200,9 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
     var selectedBar by remember(bars) { mutableIntStateOf(defaultBarIndex) }
     // 支出节奏图样式由页面持有（与入场进度同理：滑出屏幕不重置）
     var trendStyle by remember { mutableStateOf(TrendChartStyle.BAR) }
+    // 存款趋势图样式 / 区间设置弹层
+    var savingsStyle by remember { mutableStateOf(TrendChartStyle.BAR) }
+    var showSavingsRange by remember { mutableStateOf(false) }
 
     // 分类切片：实际支出（本期，已排除被标「已退款」的支出）+ 分类预算（年视角按 12 个月合计）
     val slices = remember(rolledCategory, categoryBudgets, categories, mode) {
@@ -253,8 +267,9 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
                 .weight(1f)
                 // 点页面上任意空白处 = 取消圆环选中（点环 / 点图例行会被它们自己接住）
                 .pointerInput(selectedState) { detectTapGestures { selectedState.value = null } },
-            // 底栏悬浮在内容之上；额外留出滚动余量，让 02 的圆环能真正吸顶
-            contentPadding = PaddingValues(bottom = ecoBottomContentPadding(extra = 180.dp)),
+            // 底栏悬浮在内容之上：只留底栏高度的安全距离 + 一点余量，
+            // 不加多余的滚动余量（否则最底部会有一段拉不到头的空白）
+            contentPadding = PaddingValues(bottom = ecoBottomContentPadding(extra = 24.dp)),
         ) {
             // 与账单页共用同一个结余封面对象（同一张背景图 / 同一份 VM 状态），随内容滚动
             item(key = "cover") {
@@ -385,7 +400,21 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
                         current = savingNow,
                         trend = trendNow,
                         goalCents = depositGoal,
+                        style = savingsStyle,
+                        onStyleChange = { savingsStyle = it },
+                        onOpenRange = { showSavingsRange = true },
                     )
+                }
+                // 逐月明细与趋势图同层级的两块内容，和「每日支出 / 分类预算与占比」的层次一致
+                item(key = "savingsListHead") {
+                    EcoSectionHead(
+                        title = "每月存款",
+                        aside = "MONTHLY",
+                        modifier = Modifier.padding(horizontal = 22.dp),
+                    )
+                }
+                item(key = "savingsList") {
+                    SavingsMonthlyCard(trend = trendNow, goalCents = depositGoal)
                 }
             }
         }
@@ -399,6 +428,23 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
             onSelectYear = { vm.setMonth(YearMonth.of(it, month.monthValue)) },
             onDismiss = { showPicker = false },
             currentMonth = currentAccountingMonth,
+        )
+    }
+
+    if (showSavingsRange) {
+        SavingsRangeSheet(
+            showAll = depositShowAll,
+            rangeMonths = depositRangeMonths,
+            start = depositRangeStart,
+            end = depositRangeEnd,
+            trend = depositTrend.orEmpty(),
+            onApply = { all, months, start, end ->
+                vm.setDepositShowAll(all)
+                vm.setDepositRangeMonths(months)
+                vm.setDepositRangeBounds(start, end)
+                showSavingsRange = false
+            },
+            onDismiss = { showSavingsRange = false },
         )
     }
 }
@@ -1069,16 +1115,20 @@ private fun RatioListRow(
 // ---------- 存款分析 ----------
 
 /**
- * 存款分析卡：当月实际新增存款（收入 − 支出）+ 目标达成比例 + 近 12 个月趋势与逐月明细。
+ * 存款分析卡：当月实际新增存款（收入 − 支出）+ 目标达成比例 + 存款趋势图。
  *
  * 数据来自 [LedgerViewModel.currentMonthSaving] / [LedgerViewModel.depositTrend]，
  * 口径与首页、统计页一致：支出排除「已退款」，收入含退款到账。
+ * 趋势图的月份范围与「存款」页共用同一份设置（月数 / 全部 / 手动年月），旁边可切柱形/折线。
  */
 @Composable
 private fun SavingsCard(
     current: DepositMath.MonthSaving,
     trend: List<DepositMath.MonthSaving>,
     goalCents: Long,
+    style: TrendChartStyle,
+    onStyleChange: (TrendChartStyle) -> Unit,
+    onOpenRange: () -> Unit,
 ) {
     val c = MaterialTheme.eco
     val savingCents = current.savingCents
@@ -1153,13 +1203,37 @@ private fun SavingsCard(
             Spacer(Modifier.height(12.dp))
             Box(Modifier.fillMaxWidth().height(1.dp).background(c.rule))
             Spacer(Modifier.height(10.dp))
-            Text(
-                "存款趋势 · 近 12 个月",
-                style = EcoType.RowTitle.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Bold),
-                color = c.ink,
-            )
+            // 标题 + 柱形/折线切换 + 当前区间（点「区间」可改显示哪些月份）
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "存款趋势",
+                    style = EcoType.SectionTitle.copy(fontSize = 12.sp),
+                    color = c.ink,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.width(8.dp))
+                EcoSegmented(
+                    options = listOf("柱形", "折线"),
+                    selectedIndex = if (style == TrendChartStyle.BAR) 0 else 1,
+                    onSelect = {
+                        onStyleChange(if (it == 0) TrendChartStyle.BAR else TrendChartStyle.LINE)
+                    },
+                    modifier = Modifier.width(74.dp),
+                    height = 24.dp,
+                    small = true,
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    savingsSpanLabel(trend),
+                    style = EcoType.PageNote.copy(fontSize = 8.sp),
+                    color = c.quiet,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.width(4.dp))
+                EcoTextAction(text = "区间", onClick = onOpenRange)
+            }
             Spacer(Modifier.height(8.dp))
-            SavingsBars(trend)
+            SavingsChart(trend, style)
             Spacer(Modifier.height(6.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Text(
@@ -1178,18 +1252,39 @@ private fun SavingsCard(
                     color = c.quiet,
                 )
             }
-            Spacer(Modifier.height(10.dp))
-            trend.takeLast(6).reversed().forEachIndexed { index, month ->
-                if (index > 0) {
-                    Box(Modifier.fillMaxWidth().height(1.dp).background(c.rule))
+        }
+    }
+}
+
+/** 逐月存款明细卡：与趋势图拆成两块，层次对齐「每日支出 / 分类预算与占比」 */
+@Composable
+private fun SavingsMonthlyCard(trend: List<DepositMath.MonthSaving>, goalCents: Long) {
+    val c = MaterialTheme.eco
+    EcoPane(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 22.dp),
+        shape = RoundedCornerShape(20.dp),
+    ) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 8.dp)) {
+            if (trend.isEmpty()) {
+                Box(Modifier.fillMaxWidth().padding(12.dp), contentAlignment = Alignment.Center) {
+                    EmptyNote("暂无存款记录")
                 }
-                SavingsMonthRow(month = month, goalCents = goalCents)
+            } else {
+                // 新的月份在上
+                trend.reversed().forEachIndexed { index, month ->
+                    if (index > 0) {
+                        Box(Modifier.fillMaxWidth().height(1.dp).background(c.rule))
+                    }
+                    SavingsMonthRow(month = month, goalCents = goalCents)
+                }
             }
         }
     }
 }
 
-/** 单月存款行：月份 / 新增金额 / 达成比例 */
+/** 单月存款行：月份 / 新增金额 / 达成比例（负数红显） */
 @Composable
 private fun SavingsMonthRow(month: DepositMath.MonthSaving, goalCents: Long) {
     val c = MaterialTheme.eco
@@ -1218,7 +1313,13 @@ private fun SavingsMonthRow(month: DepositMath.MonthSaving, goalCents: Long) {
         Text(
             ratio?.let { "${(it * 100f).roundToInt()}%" } ?: "—",
             style = EcoType.PageNote.copy(fontSize = 9.sp),
-            color = if (ratio == null) c.quiet else if (ratio >= 1f) c.jade else c.muted,
+            // 达成率为负（净流出/没达标反向）用红色，正数达标才用玉色
+            color = when {
+                ratio == null -> c.quiet
+                ratio < 0f -> c.clay
+                ratio >= 1f -> c.jade
+                else -> c.muted
+            },
             modifier = Modifier.width(40.dp),
             textAlign = TextAlign.End,
             maxLines = 1,
@@ -1226,9 +1327,9 @@ private fun SavingsMonthRow(month: DepositMath.MonthSaving, goalCents: Long) {
     }
 }
 
-/** 12 个月存款柱：以零线为基准，正数向上（jade）、负数向下（clay） */
+/** 存款趋势图：柱形（零线上下分正负）/ 折线（点色区分正负） */
 @Composable
-private fun SavingsBars(trend: List<DepositMath.MonthSaving>) {
+private fun SavingsChart(trend: List<DepositMath.MonthSaving>, style: TrendChartStyle) {
     val c = MaterialTheme.eco
     val values = trend.map { it.savingCents }
     if (values.isEmpty()) return
@@ -1239,8 +1340,6 @@ private fun SavingsBars(trend: List<DepositMath.MonthSaving>) {
             .height(84.dp),
     ) {
         val count = values.size
-        val slot = size.width / count
-        val barWidth = slot * 0.52f
         val midY = size.height / 2f
         val half = size.height / 2f - 4.dp.toPx()
         drawLine(
@@ -1249,18 +1348,224 @@ private fun SavingsBars(trend: List<DepositMath.MonthSaving>) {
             end = Offset(size.width, midY),
             strokeWidth = 1.dp.toPx(),
         )
-        values.forEachIndexed { index, value ->
-            val height = (kotlin.math.abs(value).toFloat() / maxAbs) * half
-            val x = index * slot + (slot - barWidth) / 2f
-            val color = if (value >= 0L) c.jade else c.clay
-            val h = if (value == 0L) 1.dp.toPx() else height.coerceAtLeast(1.5.dp.toPx())
-            drawRoundRect(
-                color = color.copy(alpha = 0.82f),
-                topLeft = Offset(x, if (value >= 0L) midY - h else midY),
-                size = Size(barWidth, h),
-                cornerRadius = CornerRadius(barWidth / 2f),
+        fun yAt(value: Long): Float =
+            midY - (value.toFloat() / maxAbs).coerceIn(-1f, 1f) * half
+
+        if (style == TrendChartStyle.BAR) {
+            val slot = size.width / count
+            val barWidth = slot * 0.52f
+            values.forEachIndexed { index, value ->
+                val height = (kotlin.math.abs(value).toFloat() / maxAbs) * half
+                val x = index * slot + (slot - barWidth) / 2f
+                val color = if (value >= 0L) c.jade else c.clay
+                val h = if (value == 0L) 1.dp.toPx() else height.coerceAtLeast(1.5.dp.toPx())
+                drawRoundRect(
+                    color = color.copy(alpha = 0.82f),
+                    topLeft = Offset(x, if (value >= 0L) midY - h else midY),
+                    size = Size(barWidth, h),
+                    cornerRadius = CornerRadius(barWidth / 2f),
+                )
+            }
+        } else {
+            val pad = 5.dp.toPx()
+            val step = if (count <= 1) 0f else (size.width - pad * 2f) / (count - 1)
+            fun xAt(index: Int): Float = if (count <= 1) size.width / 2f else pad + index * step
+            val path = Path()
+            values.forEachIndexed { index, value ->
+                val x = xAt(index)
+                val y = yAt(value)
+                if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            drawPath(
+                path = path,
+                color = c.blue,
+                style = Stroke(
+                    width = 2.dp.toPx(),
+                    cap = StrokeCap.Round,
+                    join = StrokeJoin.Round,
+                ),
             )
+            values.forEachIndexed { index, value ->
+                drawCircle(
+                    color = if (value >= 0L) c.jade else c.clay,
+                    radius = 2.6.dp.toPx(),
+                    center = Offset(xAt(index), yAt(value)),
+                )
+            }
         }
+    }
+}
+
+/** 趋势区间文案：2025/12 – 2026/10 */
+private fun savingsSpanLabel(trend: List<DepositMath.MonthSaving>): String {
+    val first = trend.firstOrNull()?.month ?: return ""
+    val last = trend.lastOrNull()?.month ?: return ""
+    return "${savingsMonthTag(first)} – ${savingsMonthTag(last)}"
+}
+
+private fun savingsMonthTag(month: YearMonth?): String =
+    month?.let { "${it.year}/${it.monthValue.toString().padStart(2, '0')}" } ?: "最早"
+
+/**
+ * 存款趋势区间设置：指定月数（3/6/12/24/36）、全部历史，或手动起止年月。
+ * 与「存款」页共用同一份设置，改完两边一致。
+ */
+@Composable
+private fun SavingsRangeSheet(
+    showAll: Boolean,
+    rangeMonths: Int,
+    start: YearMonth?,
+    end: YearMonth?,
+    trend: List<DepositMath.MonthSaving>,
+    onApply: (all: Boolean, months: Int, start: YearMonth?, end: YearMonth?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    var all by remember(showAll) { mutableStateOf(showAll) }
+    var months by remember(rangeMonths) { mutableIntStateOf(rangeMonths) }
+    var draftStart by remember(start) { mutableStateOf(start) }
+    var draftEnd by remember(end) { mutableStateOf(end) }
+    var pickerOpen by remember { mutableStateOf(false) }
+    var picking by remember { mutableIntStateOf(-1) }
+
+    if (!pickerOpen) {
+        EcoSheet(
+            onDismiss = onDismiss,
+            title = "存款趋势区间",
+            subtitle = "只影响存款趋势显示哪些月份；与「存款」页共用这份设置",
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "显示范围",
+                        style = EcoType.RowTitle.copy(fontSize = 12.sp),
+                        color = c.ink,
+                        modifier = Modifier.weight(1f),
+                    )
+                    EcoSegmented(
+                        options = listOf("指定月份", "全部"),
+                        selectedIndex = if (all) 1 else 0,
+                        onSelect = { all = it == 1 },
+                        modifier = Modifier.width(124.dp),
+                        height = 28.dp,
+                        small = true,
+                    )
+                }
+                Spacer(Modifier.height(12.dp))
+                if (all) {
+                    Text(
+                        "显示从最早一笔账单所在月到本月的全部月份",
+                        style = EcoType.PageNote.copy(fontSize = 9.sp),
+                        color = c.muted,
+                    )
+                } else {
+                    Text(
+                        "显示月数",
+                        style = EcoType.RowTitle.copy(fontSize = 12.sp),
+                        color = c.ink,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf(3, 6, 12, 24, 36).forEach { n ->
+                            EcoChip(
+                                text = "$n 个月",
+                                selected = months == n,
+                                onClick = { months = n },
+                                height = 28.dp,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "起止年月",
+                            style = EcoType.RowTitle.copy(fontSize = 12.sp),
+                            color = c.ink,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (draftStart != null || draftEnd != null) {
+                            EcoTextAction(
+                                text = "清除",
+                                onClick = {
+                                    draftStart = null
+                                    draftEnd = null
+                                },
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        EcoChip(
+                            text = savingsMonthTag(draftStart),
+                            selected = draftStart != null,
+                            onClick = {
+                                picking = 0
+                                pickerOpen = true
+                            },
+                            height = 30.dp,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "–",
+                            style = EcoType.PageNote.copy(fontSize = 11.sp),
+                            color = c.quiet,
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        EcoChip(
+                            text = draftEnd?.let { savingsMonthTag(it) } ?: "本月",
+                            selected = draftEnd != null,
+                            onClick = {
+                                picking = 1
+                                pickerOpen = true
+                            },
+                            height = 30.dp,
+                        )
+                    }
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "设了起止年月就按它显示；清除后回到最近 N 个月。",
+                        style = EcoType.PageNote.copy(fontSize = 8.5.sp),
+                        color = c.quiet,
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+                EcoPrimaryButton(
+                    text = "保存",
+                    onClick = {
+                        onApply(
+                            all,
+                            months,
+                            if (all) null else draftStart,
+                            if (all) null else draftEnd,
+                        )
+                    },
+                )
+                Spacer(Modifier.height(14.dp))
+            }
+        }
+    }
+
+    if (pickerOpen) {
+        val fallbackStart = start ?: YearMonth.now().minusMonths(rangeMonths.toLong() - 1L)
+        PeriodPickerSheet(
+            mode = PeriodMode.MONTH,
+            current = if (picking == 0) (draftStart ?: trend.firstOrNull()?.month ?: fallbackStart) else (draftEnd ?: YearMonth.now()),
+            onSelectMonth = { month ->
+                if (picking == 0) draftStart = month else draftEnd = month
+                pickerOpen = false
+                picking = -1
+            },
+            onSelectYear = { year ->
+                if (picking == 0) draftStart = (draftStart ?: fallbackStart).withYear(year)
+                else draftEnd = (draftEnd ?: YearMonth.now()).withYear(year)
+                pickerOpen = false
+                picking = -1
+            },
+            onDismiss = {
+                pickerOpen = false
+                picking = -1
+            },
+        )
     }
 }
 

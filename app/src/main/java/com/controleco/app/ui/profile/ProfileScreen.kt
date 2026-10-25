@@ -75,6 +75,7 @@ import com.controleco.app.data.budget.Budget
 import com.controleco.app.data.budget.MonthPeriod
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.TxType
+import com.controleco.app.ui.common.ColorWheelDialog
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.common.WheelPicker
 import com.controleco.app.ui.common.WheelTrigger
@@ -347,7 +348,9 @@ fun ProfileScreen(
     if (showTheme) {
         ThemeSheet(
             accent = AccentThemeStore.current,
+            customBase = AccentThemeStore.customBase,
             onPickAccent = { AccentThemeStore.set(context, it) },
+            onPickCustom = { AccentThemeStore.setCustom(context, it) },
             onDismiss = { showTheme = false },
         )
     }
@@ -1236,13 +1239,22 @@ private fun PlanTile(onClick: () -> Unit, modifier: Modifier = Modifier) {
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(EcoIcons.Clock, contentDescription = null, tint = c.onHero, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(6.dp))
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(EcoIcons.Clock, contentDescription = null, tint = c.onHero, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "分期·周期",
+                    style = EcoType.Chip.copy(fontSize = 13.5.sp, fontWeight = FontWeight(800), letterSpacing = 0.sp),
+                    color = c.onHero,
+                    maxLines = 1,
+                )
+            }
+            Spacer(Modifier.height(2.dp))
             Text(
-                "分期·周期",
-                style = EcoType.Chip.copy(fontSize = 12.5.sp, fontWeight = FontWeight(800), letterSpacing = 0.sp),
-                color = c.onHero,
+                "PLAN / 计划与周期账单",
+                style = EcoType.Micro.copy(fontSize = 7.5.sp, letterSpacing = 0.4.sp),
+                color = c.onHero.copy(alpha = 0.72f),
                 maxLines = 1,
             )
         }
@@ -1423,78 +1435,157 @@ private fun MonthStartSheet(
     }
 }
 
-/** 主题按钮专用弹层：只包含主题色，不再混入「更多」。 */
+/** 主题按钮专用弹层：预设主题色 + 自定义色。 */
 @Composable
 private fun ThemeSheet(
     accent: EcoAccent,
+    customBase: Color?,
     onPickAccent: (EcoAccent) -> Unit,
+    onPickCustom: (Color) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    var wheelOpen by remember { mutableStateOf(false) }
     EcoSheet(onDismiss = onDismiss, title = "主题色") {
-        ThemeRow(selected = accent, onPick = onPickAccent)
+        ThemeRow(
+            selected = accent,
+            customBase = customBase,
+            onPick = onPickAccent,
+            onCustom = { wheelOpen = true },
+        )
+    }
+    if (wheelOpen) {
+        ColorWheelDialog(
+            initial = customBase ?: Color(accent.light.blue),
+            onConfirm = {
+                onPickCustom(it)
+                wheelOpen = false
+            },
+            onDismiss = { wheelOpen = false },
+        )
     }
 }
 
 /**
- * 主题色：7 个圆形色板（EcoAccent 七套，含「纯白」），选中项描环，点一下即时生效。
+ * 主题色：7 个预设圆形色板（EcoAccent 七套，含「纯白」）+ 1 个「自定义」色轮，
+ * 选中项描环，点一下即时生效。
  *
- * 7 个一行在 390dp 下会把标签挤断，所以按 4 列分两行；色点直径随列宽自适应。
+ * 8 个色板按 4 列分两行；色点直径随列宽自适应。
+ * 自定义只取色相 + 饱和度，明度骨架沿用当前预设，避免选到极亮/极暗色后按钮看不清。
  */
 @Composable
-private fun ThemeRow(selected: EcoAccent, onPick: (EcoAccent) -> Unit) {
+private fun ThemeRow(
+    selected: EcoAccent,
+    customBase: Color?,
+    onPick: (EcoAccent) -> Unit,
+    onCustom: () -> Unit,
+) {
     val c = MaterialTheme.eco
+    val customOn = customBase != null
+    // 色轮图标：无自定义时用彩虹环提示「可自选」
+    val rainbow = remember {
+        Brush.sweepGradient(
+            listOf(
+                Color(0xFFE85D5D), Color(0xFFE8B45D), Color(0xFF6FBF73),
+                Color(0xFF4FA8C8), Color(0xFF6B6BD6), Color(0xFFD06BB0), Color(0xFFE85D5D),
+            ),
+        )
+    }
     Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp)) {
-        EcoAccent.entries.chunked(4).forEach { rowEntries ->
+        EcoAccent.entries.chunked(4).forEachIndexed { rowIndex, rowEntries ->
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 rowEntries.forEach { entry ->
-                    val on = entry == selected
+                    val on = !customOn && entry == selected
                     // 色点要显示「实际生效」的主色（eco 里做过整体提亮），不能用原始 Family 值
                     val dot = ecoColors(c.isDark, entry).blue
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onPick(entry) }
-                            .padding(vertical = 4.dp),
-                    ) {
-                        Box(
-                            Modifier
-                                .size(if (on) 44.dp else 40.dp)
-                                .clip(CircleShape)
-                                .background(dot)
-                                .then(
-                                    if (on) {
-                                        Modifier.border(2.dp, c.blue, CircleShape)
-                                    } else {
-                                        Modifier.border(1.dp, c.rule, CircleShape)
-                                    },
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            if (on) {
-                                Icon(
-                                    EcoIcons.Check,
-                                    contentDescription = null,
-                                    // 浅底主题（白/暖金）用深色勾，深底用白勾
-                                    tint = contentColorOn(dot),
-                                    modifier = Modifier.size(17.dp),
-                                )
-                            }
-                        }
-                        Spacer(Modifier.height(5.dp))
-                        Text(
-                            entry.label,
-                            style = EcoType.Pill.copy(fontSize = 10.5.sp),
-                            color = if (on) c.ink else c.muted,
-                            maxLines = 1,
-                        )
-                    }
+                    ThemeDot(
+                        dot = dot,
+                        brush = null,
+                        label = entry.label,
+                        on = on,
+                        ring = c.blue,
+                        onClick = { onPick(entry) },
+                        modifier = Modifier.weight(1f),
+                    )
                 }
-                // 末行不足 4 个时补占位，保持列宽一致
-                repeat(4 - rowEntries.size) { Spacer(Modifier.weight(1f)) }
+                // 末行不足 4 个时补占位，保持列宽一致；末行第 4 格留给「自定义」
+                val customSlot = rowIndex == 1
+                repeat((4 - rowEntries.size - if (customSlot) 1 else 0).coerceAtLeast(0)) {
+                    Spacer(Modifier.weight(1f))
+                }
+                if (customSlot) {
+                    ThemeDot(
+                        dot = customBase ?: Color.White,
+                        brush = if (customOn) null else rainbow,
+                        label = "自定义",
+                        on = customOn,
+                        ring = c.blue,
+                        onClick = onCustom,
+                        modifier = Modifier.weight(1f),
+                        showWheelHint = !customOn,
+                    )
+                }
             }
         }
+    }
+}
+
+/** 主题色圆点：支持纯色或渐变刷，选中时放大 + 描环 + 勾。 */
+@Composable
+private fun ThemeDot(
+    dot: Color,
+    brush: Brush?,
+    label: String,
+    on: Boolean,
+    ring: Color,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    showWheelHint: Boolean = false,
+) {
+    val c = MaterialTheme.eco
+    val dotModifier = Modifier
+        .size(if (on) 44.dp else 40.dp)
+        .clip(CircleShape)
+        .then(if (brush != null) Modifier.background(brush) else Modifier.background(dot))
+        .then(
+            if (on) {
+                Modifier.border(2.dp, ring, CircleShape)
+            } else {
+                Modifier.border(1.dp, c.rule, CircleShape)
+            },
+        )
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+    ) {
+        Box(dotModifier, contentAlignment = Alignment.Center) {
+            if (on) {
+                Icon(
+                    EcoIcons.Check,
+                    contentDescription = null,
+                    // 浅底主题（白/暖金）用深色勾，深底用白勾
+                    tint = contentColorOn(dot),
+                    modifier = Modifier.size(17.dp),
+                )
+            } else if (showWheelHint) {
+                // 彩虹环中间留一个白心，像调色盘
+                Box(
+                    Modifier
+                        .size(18.dp)
+                        .clip(CircleShape)
+                        .background(c.surface),
+                )
+            }
+        }
+        Spacer(Modifier.height(5.dp))
+        Text(
+            label,
+            style = EcoType.Pill.copy(fontSize = 10.5.sp),
+            color = if (on) c.ink else c.muted,
+            maxLines = 1,
+        )
     }
 }
 

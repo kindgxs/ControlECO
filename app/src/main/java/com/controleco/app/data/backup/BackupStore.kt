@@ -295,6 +295,13 @@ object BackupStore {
                 is Long -> put(key, JSONObject().put("t", "l").put("v", value))
                 is Float -> put(key, JSONObject().put("t", "f").put("v", value.toDouble()))
                 is String -> put(key, JSONObject().put("t", "s").put("v", value))
+                // StringSet（如「监听的 App」名单）以数组形式保存
+                is Set<*> -> put(
+                    key,
+                    JSONObject()
+                        .put("t", "ss")
+                        .put("v", JSONArray().apply { value.forEach { item -> put(item?.toString() ?: "") } }),
+                )
             }
         }
     }
@@ -424,6 +431,16 @@ object BackupStore {
                 "l" -> editor.putLong(key, wrapper.optLong("v"))
                 "f" -> editor.putFloat(key, (value as? Number)?.toFloat() ?: 0f)
                 "s" -> editor.putString(key, wrapper.optString("v"))
+                "ss" -> {
+                    val array = wrapper.optJSONArray("v")
+                    val set = LinkedHashSet<String>()
+                    if (array != null) {
+                        for (i in 0 until array.length()) {
+                            (array.opt(i) as? String)?.takeIf { it.isNotBlank() }?.let { set += it }
+                        }
+                    }
+                    editor.putStringSet(key, set)
+                }
             }
         }
         editor.apply()
