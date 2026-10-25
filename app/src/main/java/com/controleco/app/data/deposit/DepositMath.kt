@@ -81,4 +81,16 @@ object DepositMath {
             map[m] ?: MonthSaving(m, 0L, 0L)
         }
     }
+
+    /** 指定区间（含首尾月）的连续趋势；区间内缺数据的月补 0，首月早于结束月时按月递增 */
+    fun trendBetween(
+        savings: List<MonthSaving>,
+        startMonth: YearMonth,
+        endMonth: YearMonth,
+    ): List<MonthSaving> {
+        if (startMonth.isAfter(endMonth)) return emptyList()
+        val map = savings.associateBy { it.month }
+        val months = generateSequence(startMonth) { if (it < endMonth) it.plusMonths(1) else null }
+        return months.map { month -> map[month] ?: MonthSaving(month, 0L, 0L) }.toList()
+    }
 }

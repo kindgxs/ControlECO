@@ -84,13 +84,21 @@ fun AccountsScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val asset by vm.assetSummary.collectAsStateWithLifecycle(initialValue = null)
     val installmentPlans by vm.installmentPlans.collectAsStateWithLifecycle()
 
-    // 各账户「还未到出账时间」的分期金额：只用于展示，不计入流水与余额
-    val unpostedByAccount = remember(installmentPlans) {
-        installmentPlans.groupBy { it.accountId }.mapValues { (_, plans) ->
+    // 各账户「还未到出账时间」的分期金额：只用于展示，不计入流水与余额。
+    // 共用额度组内各卡的流水是合并的，未出账分期也按组合计（与流水口径保持一致）。
+    val unpostedByAccount = remember(installmentPlans, accounts) {
+        val own = installmentPlans.groupBy { it.accountId }.mapValues { (_, plans) ->
             plans.sumOf { plan ->
                 InstallmentMath.unpostedTotal(
                     plan.totalPrincipalCents, plan.totalInterestCents, plan.periods, plan.postedPeriods,
                 )
+            }
+        }
+        accounts.associate { account ->
+            account.id to if (account.sharedGroupId == 0L) {
+                own[account.id] ?: 0L
+            } else {
+                accounts.filter { it.sharedGroupId == account.sharedGroupId }.sumOf { own[it.id] ?: 0L }
             }
         }
     }

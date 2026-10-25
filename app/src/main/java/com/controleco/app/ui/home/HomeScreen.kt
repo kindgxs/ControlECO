@@ -1057,19 +1057,19 @@ private fun AssetAccountRow(
             color = c.ink,
             maxLines = 1,
             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f, fill = false),
+            modifier = Modifier.weight(1f),
         )
         if (sharedCount > 1 && onClick != null) {
             Spacer(Modifier.width(6.dp))
             EcoPill("$sharedCount 张 · 切换", EcoPillTone.Blue)
         }
-        Spacer(Modifier.weight(1f))
         Spacer(Modifier.width(8.dp))
         Text(
             Money.formatYuanGroupedFixed(cents),
             style = EcoType.BillAmount.copy(fontSize = 13.sp),
             color = if (cents < 0L) c.clay else c.ink,
             maxLines = 1,
+            textAlign = TextAlign.End,
         )
     }
 }

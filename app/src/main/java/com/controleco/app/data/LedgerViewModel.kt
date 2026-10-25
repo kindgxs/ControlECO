@@ -72,6 +72,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
@@ -614,6 +615,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         note: String,
         /** 商户/收款方：通知捕获自带，手动记录可自定义（账单列表标题优先显示它） */
         counterparty: String = "",
+        /** 不计入资产统计：只影响账户余额/资产，仍照常计入账单与收支统计 */
+        excludeFromAssets: Boolean = false,
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             if (id > 0) {
@@ -622,7 +625,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         old.copy(
                             type = type, amountCents = amountCents, categoryId = categoryId,
                             accountId = accountId, timestamp = timestamp, note = note,
-                            counterparty = counterparty,
+                            counterparty = counterparty, excludeFromAssets = excludeFromAssets,
                         )
                     )
                     // 编辑的是捕获来的交易 → 学习这次归类（"越用越准"；手动记账不学习）
@@ -635,7 +638,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     TransactionEntity(
                         type = type, amountCents = amountCents, categoryId = categoryId,
                         accountId = accountId, timestamp = timestamp, note = note,
-                        counterparty = counterparty,
+                        counterparty = counterparty, excludeFromAssets = excludeFromAssets,
                     )
                 )
             }
@@ -1584,6 +1587,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         categoryId: Long,
         accountId: Long,
         counterparty: String = item.counterparty,
+        /** 不计入资产统计：默认 false（自动入账口径计入资产） */
+        excludeFromAssets: Boolean = false,
     ) {
         // 金额待补条（0 元）不能直接入账：先在列表里补金额
         if (item.amountCents <= 0) {
@@ -1591,7 +1596,10 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
             return
         }
         viewModelScope.launch(Dispatchers.IO) {
-            PendingActions.confirm(db, txDao, pendingDao, merchantRuleDao, item, categoryId, accountId, counterparty)
+            PendingActions.confirm(
+                db, txDao, pendingDao, merchantRuleDao, item,
+                categoryId, accountId, counterparty, item.amountCents, excludeFromAssets,
+            )
         }
     }
 
@@ -1704,19 +1712,18 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     /** 按月存款目标（分）：没单独设置的月份回落到 [depositGoalCents] */
     val depositMonthGoals: StateFlow<Map<YearMonth, Long>> = _depositMonthGoals
 
-    /** 某个会计月实际生效的存款目标（分），0 = 未设置 */
+    /** 某个会计月实际生效的存款目标（分），0 = 该月不设存款目标 */
     fun depositGoalFor(month: YearMonth): Long =
         _depositMonthGoals.value[month] ?: _depositGoalCents.value
 
-    /** 设置单月存款目标：0 = 清除该月设置，回落到默认目标 */
-    fun setDepositGoalFor(month: YearMonth, cents: Long) {
-        val v = cents.coerceAtLeast(0L)
+    /** 设置单月存款目标：null = 清除该月设置（回落到默认目标）；0 = 该月明确不设存款目标 */
+    fun setDepositGoalFor(month: YearMonth, cents: Long?) {
         val key = KEY_DEPOSIT_MONTH_GOAL_PREFIX + month
         val editor = prefs.edit()
-        if (v > 0L) editor.putLong(key, v) else editor.remove(key)
+        if (cents != null) editor.putLong(key, cents.coerceAtLeast(0L)) else editor.remove(key)
         editor.apply()
         _depositMonthGoals.value = loadDepositMonthGoals()
-        AppLog.i("settings", "depositGoal[$month]=${Money.formatYuan(v)}")
+        AppLog.i("settings", "depositGoal[$month]=${cents?.let { Money.formatYuan(it) } ?: "cleared"}")
     }
 
     private fun loadDepositMonthGoals(): Map<YearMonth, Long> =
@@ -1725,20 +1732,72 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
             val month = runCatching {
                 YearMonth.parse(key.removePrefix(KEY_DEPOSIT_MONTH_GOAL_PREFIX))
             }.getOrNull()
-            val cents = (value as? Long)?.takeIf { it > 0L }
+            // 0 也是有效设置（该月不设目标），只有缺失/非法值才丢弃
+            val cents = (value as? Long)?.coerceAtLeast(0L)
             if (month != null && cents != null) month to cents else null
         }.toMap()
 
-    /** 近 12 个会计月的账单行：存款趋势与每月新增存款的数据源 */
+    /** 存款计划开始的月份（设置页里配置）：决定「每月存款」默认从哪个月开始显示 */
+    private val _depositPlanStart = MutableStateFlow(loadDepositPlanStart())
+
+    val depositPlanStartMonth: StateFlow<YearMonth?> = _depositPlanStart
+
+    /** 设置存款计划开始月份；null = 不设置（每月存款默认只显示近 12 个月） */
+    fun setDepositPlanStartMonth(month: YearMonth?) {
+        val editor = prefs.edit()
+        if (month != null) editor.putString(KEY_DEPOSIT_PLAN_START, month.toString())
+        else editor.remove(KEY_DEPOSIT_PLAN_START)
+        editor.apply()
+        _depositPlanStart.value = month
+        AppLog.i("settings", "depositPlanStart=$month")
+    }
+
+    private fun loadDepositPlanStart(): YearMonth? =
+        prefs.getString(KEY_DEPOSIT_PLAN_START, null)?.let { raw ->
+            runCatching { YearMonth.parse(raw) }.getOrNull()
+        }
+
+    /** 每月存款的显示范围：false = 从计划开始月（未设置则近 12 个月），true = 全部历史 */
+    private val _depositShowAll = MutableStateFlow(prefs.getBoolean(KEY_DEPOSIT_SHOW_ALL, false))
+
+    val depositShowAll: StateFlow<Boolean> = _depositShowAll
+
+    fun setDepositShowAll(all: Boolean) {
+        prefs.edit().putBoolean(KEY_DEPOSIT_SHOW_ALL, all).apply()
+        _depositShowAll.value = all
+        AppLog.i("settings", "depositShowAll=$all")
+    }
+
+    /** 每月存款趋势的起始月：全部 = 最早一笔账单所在月；否则取计划开始月，未设置时近 12 个月 */
     @OptIn(ExperimentalCoroutinesApi::class)
-    val depositRows: StateFlow<List<TransactionRow>?> = currentPeriod.flatMapLatest { period ->
+    private val depositStartMonth: Flow<YearMonth> = combine(
+        currentPeriod,
+        _depositPlanStart,
+        _depositShowAll,
+        txDao.observeEarliestTimestamp(),
+    ) { period, planStart, showAll, earliest ->
         val endMonth = YearMonth.from(period.start)
-        val start = endMonth.minusMonths(11).atDay(1)
-        val end = endMonth.plusMonths(1).atDay(1)
-        txDao.observeRows(
-            start.atStartOfDay(zone).toInstant().toEpochMilli(),
-            end.atStartOfDay(zone).toInstant().toEpochMilli(),
-        )
+        val fallback = endMonth.minusMonths(11)
+        val planMonth = planStart?.takeIf { !it.isAfter(endMonth) }
+        val earliestMonth = earliest?.let {
+            YearMonth.from(java.time.Instant.ofEpochMilli(it).atZone(zone).toLocalDate())
+        }?.takeIf { !it.isAfter(endMonth) }
+        when {
+            showAll -> earliestMonth ?: planMonth ?: fallback
+            planMonth != null -> planMonth
+            else -> fallback
+        }
+    }.distinctUntilChanged()
+
+    /** 至少覆盖当前显示范围的账单行：存款趋势与每月新增存款的数据源 */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val depositRows: StateFlow<List<TransactionRow>?> = combine(depositStartMonth, currentPeriod) { startMonth, period ->
+        val start = startMonth.atDay(1).atStartOfDay(zone).toInstant().toEpochMilli()
+        val end = YearMonth.from(period.start).plusMonths(1).atDay(1)
+            .atStartOfDay(zone).toInstant().toEpochMilli()
+        start to end
+    }.distinctUntilChanged().flatMapLatest { (start, end) ->
+        txDao.observeRows(start, end)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** 当月实际新增存款 = 当月收入 − 当月（未退款）支出 */
@@ -1746,13 +1805,18 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         rows?.let { DepositMath.rangeSaving(it, period.start, period.endExclusive, zone) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    /** 含当月的连续 12 个月存款趋势（缺数据的月补 0） */
-    val depositTrend: StateFlow<List<DepositMath.MonthSaving>?> = combine(depositRows, currentPeriod) { rows, period ->
+    /** 含当月的连续存款趋势（缺数据的月补 0），区间随「存款计划开始月 / 全部」设置变化 */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val depositTrend: StateFlow<List<DepositMath.MonthSaving>?> = combine(
+        depositRows,
+        depositStartMonth,
+        currentPeriod,
+    ) { rows, startMonth, period ->
         rows?.let {
-            DepositMath.trendEndingAt(
+            DepositMath.trendBetween(
                 DepositMath.monthlySavings(it, zone),
+                startMonth,
                 YearMonth.from(period.start),
-                12,
             )
         }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
@@ -1938,9 +2002,19 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun deleteInstallment(id: Long, onDone: (String?) -> Unit = {}) {
+    /**
+     * 删除分期计划。
+     * [rollbackPosted] = true 时连同该计划已自动入账的账单一起删除（可选回滚）；
+     * 默认 false，只删计划、保留已入账账单。
+     */
+    fun deleteInstallment(id: Long, rollbackPosted: Boolean = false, onDone: (String?) -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { planDao.deleteInstallment(id) }
+            runCatching {
+                db.withTransaction {
+                    if (rollbackPosted) txDao.deleteByExternalIdPattern("PLAN_INST:$id:%")
+                    planDao.deleteInstallment(id)
+                }
+            }
                 .onSuccess { mainResult(onDone, null) }
                 .onFailure {
                     AppLog.e("plan", "delete installment failed", it)
@@ -1949,9 +2023,19 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun deleteRecurring(id: Long, onDone: (String?) -> Unit = {}) {
+    /**
+     * 删除周期计划。
+     * [rollbackPosted] = true 时连同该计划已自动入账的账单一起删除（可选回滚）；
+     * 默认 false，只删计划、保留已入账账单。
+     */
+    fun deleteRecurring(id: Long, rollbackPosted: Boolean = false, onDone: (String?) -> Unit = {}) {
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching { planDao.deleteRecurring(id) }
+            runCatching {
+                db.withTransaction {
+                    if (rollbackPosted) txDao.deleteByExternalIdPattern("PLAN_REC:$id:%")
+                    planDao.deleteRecurring(id)
+                }
+            }
                 .onSuccess { mainResult(onDone, null) }
                 .onFailure {
                     AppLog.e("plan", "delete recurring failed", it)
@@ -2149,6 +2233,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         _categoryBudgetPercents.value = loadCategoryBudgetPercents()
         _depositGoalCents.value = prefs.getLong(KEY_DEPOSIT_GOAL, 0L)
         _depositMonthGoals.value = loadDepositMonthGoals()
+        _depositPlanStart.value = loadDepositPlanStart()
+        _depositShowAll.value = prefs.getBoolean(KEY_DEPOSIT_SHOW_ALL, false)
         _homeQuickAddEnabled.value = prefs.getBoolean(KEY_HOME_QUICK_ADD, true)
         _subcategoryRollupMode.value = SubcategoryRollupMode.of(prefs.getString(KEY_SUBCAT_ROLLUP, null))
     }
@@ -2222,6 +2308,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_BUDGET_PLAN_PREFIX = "budget_plan_"
         const val KEY_DEPOSIT_GOAL = "deposit_goal_cents"
         const val KEY_DEPOSIT_MONTH_GOAL_PREFIX = "deposit_goal_month_"
+        const val KEY_DEPOSIT_PLAN_START = "deposit_plan_start_month"
+        const val KEY_DEPOSIT_SHOW_ALL = "deposit_show_all_months"
         const val KEY_SUBCAT_ROLLUP = "subcategory_rollup_mode"
         const val KEY_HOME_QUICK_ADD = "home_quick_add_enabled"
         const val KEY_ASSET_CARD_PICK = "asset_card_pick"

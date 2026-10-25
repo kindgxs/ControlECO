@@ -6,6 +6,7 @@ import com.controleco.app.data.db.AccountEntity
 import com.controleco.app.data.db.AccountKind
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.InstallmentPlanEntity
+import com.controleco.app.data.db.MerchantRuleEntity
 import com.controleco.app.data.db.RecurringPlanEntity
 import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionEntity
@@ -27,8 +28,8 @@ import java.time.format.DateTimeFormatter
  *
  * 一个文件里用 `##section` 分段，依次包含：
  * 账户、一级 + 二级分类、交易记录（时间/类型/分类/金额/资产账户/记录标识/备注/二级分类/币种，
- * 末尾附带编号、来源、退款、流水号等还原所需的扩展列）、分期计划、周期计划、预算信息、
- * 存款信息（按月收支汇总，只读）、全部设置。
+ * 末尾附带编号、来源、退款、流水号等还原所需的扩展列）、分期计划、周期计划、商户归类、
+ * 预算信息、存款信息（按月收支汇总，只读）、全部设置。
  *
  * 导出带 UTF-8 BOM，Excel 直接双击打开不乱码；导入同时接受 .csv 与 .xlsx
  * （[com.controleco.app.csv.XlsxReader] 解析 Excel 另存的文件）。
@@ -175,6 +176,15 @@ object BackupCsv {
             )
         }
 
+        out.marker("##merchant_rules|商户归类")
+        out.row("id", "matchKey", "type", "categoryId", "accountId", "hits", "updatedAt")
+        data.merchantRules.forEach { r ->
+            out.row(
+                r.id.toString(), r.matchKey, r.type.name, r.categoryId.toString(),
+                r.accountId?.toString().orEmpty(), r.hits.toString(), r.updatedAt.toString(),
+            )
+        }
+
         writeBudgets(out, prefs, data.categories)
         writeDeposits(out, data.transactions, zone)
         writeSettings(out, prefs)
@@ -285,6 +295,7 @@ object BackupCsv {
         val transactionSection = toSection(sections["transactions"])
         val installmentSection = toSection(sections["installments"])
         val recurringSection = toSection(sections["recurring"])
+        val merchantRuleSection = toSection(sections["merchant_rules"])
 
         val rawAccounts = accountSection?.let { sec -> sec.rows.mapNotNull { parseAccount(sec, it) } }.orEmpty()
         val rawCategories = categorySection?.let { sec -> sec.rows.mapNotNull { parseCategory(sec, it) } }.orEmpty()
@@ -429,12 +440,36 @@ object BackupCsv {
             }
         }.orEmpty()
 
+        // 商户归类：(matchKey, type) 唯一，同一份文件里重复的只保留第一条
+        val usedRuleIds = HashSet<Long>()
+        val seenRuleKeys = HashSet<String>()
+        val merchantRules = merchantRuleSection?.let { sec ->
+            sec.rows.mapNotNull { row ->
+                val matchKey = sec.cell(row, "matchKey")
+                if (matchKey.isBlank()) return@mapNotNull null
+                val type = enumOf(sec.cell(row, "type"), TxType.EXPENSE)
+                if (!seenRuleKeys.add("$matchKey|${type.name}")) return@mapNotNull null
+                val categoryId = sec.cell(row, "categoryId").toLongOrNull() ?: return@mapNotNull null
+                val rawId = sec.cell(row, "id").toLongOrNull() ?: 0L
+                MerchantRuleEntity(
+                    id = if (rawId > 0 && usedRuleIds.add(rawId)) rawId else 0L,
+                    matchKey = matchKey,
+                    type = type,
+                    categoryId = categoryIdMap[categoryId] ?: categoryId,
+                    accountId = sec.cell(row, "accountId").toLongOrNull()?.let { accountIdMap[it] ?: it },
+                    hits = sec.cell(row, "hits").toIntOrNull() ?: 1,
+                    updatedAt = sec.cell(row, "updatedAt").toLongOrNull() ?: 0L,
+                )
+            }
+        }.orEmpty()
+
         return BackupData(
             accounts = accountList,
             categories = categoryList,
             transactions = transactions,
             installments = installments,
             recurring = recurring,
+            merchantRules = merchantRules,
         )
     }
 

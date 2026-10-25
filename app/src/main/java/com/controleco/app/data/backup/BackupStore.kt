@@ -10,6 +10,7 @@ import com.controleco.app.data.db.AccountEntity
 import com.controleco.app.data.db.AccountKind
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.InstallmentPlanEntity
+import com.controleco.app.data.db.MerchantRuleEntity
 import com.controleco.app.data.db.RecurringPlanEntity
 import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionEntity
@@ -25,6 +26,8 @@ internal data class BackupData(
     val transactions: List<TransactionEntity> = emptyList(),
     val installments: List<InstallmentPlanEntity> = emptyList(),
     val recurring: List<RecurringPlanEntity> = emptyList(),
+    /** 自动入账的商户归类（越用越准的学习结果），含分类/账户指向 */
+    val merchantRules: List<MerchantRuleEntity> = emptyList(),
 )
 
 /**
@@ -35,6 +38,7 @@ internal data class BackupData(
  * - categories（含一级 / 二级分类、排序、图标）
  * - transactions（全部账单，含退款标记与「不扣资产」标记）
  * - installment_plans / recurring_plans
+ * - merchant_rules（自动入账的商户归类学习结果）
  * - settings（SharedPreferences 里的全部设置；卡面图片的本地 URI 不导出）
  *
  * 恢复时先清空当前账本再重建，id 原样保留，所以分类/账户的关联不会断。
@@ -66,6 +70,7 @@ object BackupStore {
             transactions = txDao.getAllEntities(),
             installments = planDao.getAllInstallments(),
             recurring = planDao.getAllRecurring(),
+            merchantRules = db.merchantRuleDao().getAll(),
         )
     }
 
@@ -75,6 +80,7 @@ object BackupStore {
         val categoryDao = db.categoryDao()
         val txDao = db.transactionDao()
         val planDao = db.planDao()
+        val merchantRuleDao = db.merchantRuleDao()
 
         db.withTransaction {
             // 先删账单，再删分类/账户，避免外键 RESTRICT 挡住
@@ -83,12 +89,15 @@ object BackupStore {
             planDao.clearRecurring()
             categoryDao.deleteAll()
             accountDao.deleteAll()
+            merchantRuleDao.clearAll()
 
             if (data.accounts.isNotEmpty()) accountDao.insertAll(data.accounts)
             if (data.categories.isNotEmpty()) categoryDao.insertAll(data.categories)
             if (data.transactions.isNotEmpty()) txDao.insertAll(data.transactions)
             data.installments.forEach { planDao.insertInstallment(it) }
             data.recurring.forEach { planDao.insertRecurring(it) }
+            // id 原样保留：商户归类里的分类/账户指向不会因为还原而错位
+            data.merchantRules.forEach { merchantRuleDao.upsert(it) }
         }
         return data.transactions.size
     }
@@ -116,6 +125,9 @@ object BackupStore {
         root.put("recurring", JSONArray().apply {
             data.recurring.forEach { put(recurringJson(it)) }
         })
+        root.put("merchantRules", JSONArray().apply {
+            data.merchantRules.forEach { put(merchantRuleJson(it)) }
+        })
         root.put("settings", settingsJson(prefs))
         return root.toString()
     }
@@ -137,6 +149,7 @@ object BackupStore {
             transactions = root.optJSONArray("transactions").toEntities(::transactionOf),
             installments = root.optJSONArray("installments").toEntities(::installmentOf),
             recurring = root.optJSONArray("recurring").toEntities(::recurringOf),
+            merchantRules = root.optJSONArray("merchantRules").toEntities(::merchantRuleOf),
         )
         val count = apply(db, data)
 
@@ -251,6 +264,16 @@ object BackupStore {
         put("createdAt", p.createdAt)
     }
 
+    private fun merchantRuleJson(r: MerchantRuleEntity) = JSONObject().apply {
+        put("id", r.id)
+        put("matchKey", r.matchKey)
+        put("type", r.type.name)
+        put("categoryId", r.categoryId)
+        put("accountId", r.accountId ?: JSONObject.NULL)
+        put("hits", r.hits)
+        put("updatedAt", r.updatedAt)
+    }
+
     /** 全部设置 → {"key": {"t": 类型, "v": 值}}；CSV 备份也复用这一份 */
     internal fun settingsJson(prefs: SharedPreferences) = JSONObject().apply {
         prefs.all.forEach { (key, value) ->
@@ -349,6 +372,16 @@ object BackupStore {
         excludeAssetPeriods = o.optString("excludeAssetPeriods"),
         note = o.optString("note"),
         createdAt = o.optLong("createdAt"),
+    )
+
+    private fun merchantRuleOf(o: JSONObject) = MerchantRuleEntity(
+        id = o.optLong("id"),
+        matchKey = o.optString("matchKey"),
+        type = enumOf<TxType>(o.optString("type"), TxType.EXPENSE),
+        categoryId = o.optLong("categoryId"),
+        accountId = if (o.isNull("accountId")) null else o.optLong("accountId"),
+        hits = o.optInt("hits", 1),
+        updatedAt = o.optLong("updatedAt"),
     )
 
     private fun <T> JSONArray?.toEntities(map: (JSONObject) -> T): List<T> {

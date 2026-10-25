@@ -65,6 +65,7 @@ import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoRowDivider
 import com.controleco.app.ui.eco.EcoSheet
+import com.controleco.app.ui.eco.EcoSwitchRow
 import com.controleco.app.ui.eco.EcoTextAction
 import com.controleco.app.ui.eco.EcoToast
 import com.controleco.app.ui.eco.EcoTopBar
@@ -235,8 +236,8 @@ fun PendingScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 isRefund = p.refundMark == RefundMark.REFUND_INCOME,
             ),
             defaultAccountId = vm.guessAccountId(p.sourcePackage, p.ruleName, p.paymentInstrument),
-            onConfirm = { categoryId, accountId, counterparty ->
-                vm.confirmPending(p, categoryId, accountId, counterparty)
+            onConfirm = { categoryId, accountId, counterparty, excludeFromAssets ->
+                vm.confirmPending(p, categoryId, accountId, counterparty, excludeFromAssets)
                 confirming = null
             },
             onDismiss = { confirming = null },
@@ -711,12 +712,14 @@ private fun ConfirmPendingSheet(
     categories: List<CategoryEntity>,
     defaultCategoryId: Long?,
     defaultAccountId: Long?,
-    onConfirm: (Long, Long, String) -> Unit,
+    onConfirm: (Long, Long, String, Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var categoryId by remember(item.id) { mutableStateOf(defaultCategoryId) }
     var accountId by remember(item.id) { mutableStateOf(defaultAccountId) }
     var counterparty by remember(item.id) { mutableStateOf(item.counterparty) }
+    // 是否计入资产统计：默认计入（自动入账口径）
+    var excludeFromAssets by remember(item.id) { mutableStateOf(false) }
     var error by remember(item.id) { mutableStateOf<String?>(null) }
     val catsOfType = categories.filter { it.type == item.type }
     val c = MaterialTheme.eco
@@ -789,6 +792,13 @@ private fun ConfirmPendingSheet(
                 }
             }
 
+            EcoSwitchRow(
+                title = "计入资产统计",
+                checked = !excludeFromAssets,
+                onCheckedChange = { excludeFromAssets = !it },
+                subtitle = "关闭后只记账，不改变账户余额",
+            )
+
             error?.let {
                 Text(it, style = EcoType.PageNote, color = c.clay)
             }
@@ -813,7 +823,7 @@ private fun ConfirmPendingSheet(
                                 return@save
                             }
                             error = null
-                            onConfirm(cat, acc, counterparty.trim())
+                            onConfirm(cat, acc, counterparty.trim(), excludeFromAssets)
                         },
                     )
                 }

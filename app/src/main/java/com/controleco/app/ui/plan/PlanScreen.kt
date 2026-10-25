@@ -1,5 +1,6 @@
 package com.controleco.app.ui.plan
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -10,8 +11,10 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -23,6 +26,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -39,8 +43,8 @@ import com.controleco.app.data.plan.RecurringEndMode
 import com.controleco.app.data.plan.RecurringFrequency
 import com.controleco.app.data.plan.RecurringMath
 import com.controleco.app.ui.common.EcoIcons
-import com.controleco.app.ui.eco.EcoConfirm
 import com.controleco.app.ui.eco.EcoDangerButton
+import com.controleco.app.ui.eco.EcoDialog
 import com.controleco.app.ui.eco.EcoEmpty
 import com.controleco.app.ui.eco.EcoField
 import com.controleco.app.ui.eco.EcoGhostButton
@@ -49,6 +53,7 @@ import com.controleco.app.ui.eco.EcoPageNote
 import com.controleco.app.ui.eco.EcoPane
 import com.controleco.app.ui.eco.EcoPill
 import com.controleco.app.ui.eco.EcoPillTone
+import com.controleco.app.ui.eco.EcoRow
 import com.controleco.app.ui.eco.EcoRowDivider
 import com.controleco.app.ui.eco.EcoSegmented
 import com.controleco.app.ui.eco.EcoSheet
@@ -266,7 +271,9 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 )
             },
             onDelete = editingInstallment?.let { plan ->
-                val action: ((String?) -> Unit) -> Unit = { onDone -> vm.deleteInstallment(plan.id, onDone) }
+                val action: (Boolean, (String?) -> Unit) -> Unit = { rollback, onDone ->
+                    vm.deleteInstallment(plan.id, rollback, onDone)
+                }
                 action
             },
             onClose = { showInstallmentEditor = false },
@@ -300,7 +307,9 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 )
             },
             onDelete = editingRecurring?.let { plan ->
-                val action: ((String?) -> Unit) -> Unit = { onDone -> vm.deleteRecurring(plan.id, onDone) }
+                val action: (Boolean, (String?) -> Unit) -> Unit = { rollback, onDone ->
+                    vm.deleteRecurring(plan.id, rollback, onDone)
+                }
                 action
             },
             onClose = { showRecurringEditor = false },
@@ -668,7 +677,7 @@ private fun InstallmentEditorSheet(
     accounts: List<AccountEntity>,
     categories: List<CategoryEntity>,
     onSave: (InstallmentDraft, (String?) -> Unit) -> Unit,
-    onDelete: (((String?) -> Unit) -> Unit)?,
+    onDelete: ((rollbackPosted: Boolean, onResult: (String?) -> Unit) -> Unit)?,
     onClose: () -> Unit,
 ) {
     val c = MaterialTheme.eco
@@ -852,16 +861,15 @@ private fun InstallmentEditorSheet(
     }
 
     if (confirmDelete && onDelete != null) {
-        EcoConfirm(
+        DeletePlanConfirm(
             title = "删除分期计划",
-            body = "已入账的账单不会回滚；删除后剩余期数不再自动入账。",
-            confirmText = "删除",
-            danger = true,
-            onConfirm = {
+            body = "删除后剩余期数不再自动入账。请选择已入账账单的处理方式。",
+            rollbackHint = "该计划已入账的每一期账单都会被删除，账户余额与统计随之变化，不可恢复。",
+            onConfirm = { rollback ->
                 confirmDelete = false
-                onDelete { err ->
+                onDelete(rollback) { err ->
                     if (err == null) {
-                        EcoToast.show("已删除")
+                        EcoToast.show(if (rollback) "已删除（含已入账账单）" else "已删除")
                         onClose()
                     } else {
                         localError = err
@@ -879,7 +887,7 @@ private fun RecurringEditorSheet(
     accounts: List<AccountEntity>,
     categories: List<CategoryEntity>,
     onSave: (RecurringDraft, (String?) -> Unit) -> Unit,
-    onDelete: (((String?) -> Unit) -> Unit)?,
+    onDelete: ((rollbackPosted: Boolean, onResult: (String?) -> Unit) -> Unit)?,
     onClose: () -> Unit,
 ) {
     val c = MaterialTheme.eco
@@ -1117,16 +1125,15 @@ private fun RecurringEditorSheet(
     }
 
     if (confirmDelete && onDelete != null) {
-        EcoConfirm(
+        DeletePlanConfirm(
             title = "删除周期计划",
-            body = "已入账的账单不会回滚；删除后不再自动入账。",
-            confirmText = "删除",
-            danger = true,
-            onConfirm = {
+            body = "删除后不再自动入账。请选择已入账账单的处理方式。",
+            rollbackHint = "该计划已入账的每一笔账单都会被删除，账户余额与统计随之变化，不可恢复。",
+            onConfirm = { rollback ->
                 confirmDelete = false
-                onDelete { err ->
+                onDelete(rollback) { err ->
                     if (err == null) {
-                        EcoToast.show("已删除")
+                        EcoToast.show(if (rollback) "已删除（含已入账账单）" else "已删除")
                         onClose()
                     } else {
                         localError = err
@@ -1134,6 +1141,86 @@ private fun RecurringEditorSheet(
                 }
             },
             onDismiss = { confirmDelete = false },
+        )
+    }
+}
+
+/**
+ * 删除计划确认（三选）：默认「保留已入账账单」，需要用户手动切到「回滚删除」才会连带删除历史账单。
+ */
+@Composable
+private fun DeletePlanConfirm(
+    title: String,
+    body: String,
+    rollbackHint: String,
+    onConfirm: (rollback: Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    var rollback by remember { mutableStateOf(false) }
+    EcoDialog(onDismiss = onDismiss) {
+        Column {
+            Text(title, style = EcoType.ModalTitle, color = c.ink)
+            Spacer(Modifier.height(8.dp))
+            Text(body, style = EcoType.ModalBody, color = c.muted)
+            Spacer(Modifier.height(14.dp))
+            EcoPane(elevation = 0.dp) {
+                Column {
+                    DeleteChoiceRow(
+                        title = "保留已入账账单",
+                        subtitle = "默认：只删除计划，历史账单继续保留",
+                        selected = !rollback,
+                        onClick = { rollback = false },
+                    )
+                    EcoRowDivider()
+                    DeleteChoiceRow(
+                        title = "回滚删除已入账账单",
+                        subtitle = rollbackHint,
+                        selected = rollback,
+                        onClick = { rollback = true },
+                    )
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                EcoGhostButton(text = "取消", onClick = onDismiss, modifier = Modifier.weight(1f), height = 40.dp)
+                Box(Modifier.weight(1f)) {
+                    EcoDangerButton(
+                        text = "删除计划",
+                        onClick = { onConfirm(rollback) },
+                        height = 40.dp,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeleteChoiceRow(
+    title: String,
+    subtitle: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .background(if (selected) c.blue.copy(alpha = 0.08f) else Color.Transparent),
+    ) {
+        EcoRow(
+            title = title,
+            subtitle = subtitle,
+            onClick = onClick,
+            trailing = {
+                Icon(
+                    imageVector = EcoIcons.Check,
+                    contentDescription = if (selected) "已选择" else null,
+                    tint = if (selected) c.blue else c.quiet.copy(alpha = 0.45f),
+                    modifier = Modifier.size(16.dp),
+                )
+            },
         )
     }
 }

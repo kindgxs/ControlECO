@@ -34,7 +34,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.pointer.pointerInput
@@ -74,9 +76,15 @@ data class BudgetRatioRow(
     val budgetCents: Long,
 )
 
-// ---------- 柱状图 ----------
+// ---------- 支出节奏图 ----------
 
-/** 柱状图：整宽均分，没有纵轴留白（数值改由卡头 readout 显示） */
+/** 支出节奏图样式：柱状 / 折线（纵坐标都显示） */
+enum class TrendChartStyle { BAR, LINE }
+
+/** 纵轴刻度栏宽度（左侧留给 0 / 1/3 / 2/3 / 上限 的金额文字） */
+private val Y_AXIS_WIDTH = 32.dp
+
+/** 整宽均分（扣掉纵轴刻度栏后按剩余宽度均分） */
 private fun barPitch(widthPx: Float, count: Int): Float =
     if (count <= 0) 1f else widthPx / count
 
@@ -125,6 +133,7 @@ fun ExpenseBarChart(
     grow: () -> Float,
     modifier: Modifier = Modifier,
     height: Dp = 155.dp,
+    style: TrendChartStyle = TrendChartStyle.BAR,
 ) {
     val c = MaterialTheme.eco
     val measurer = rememberTextMeasurer()
@@ -139,19 +148,26 @@ fun ExpenseBarChart(
             .fillMaxWidth()
             .height(height)
             .pointerInput(bars) {
+                // 手势坐标要扣掉左侧纵轴刻度栏，否则选中的柱子会整体左偏
+                val gutter = Y_AXIS_WIDTH.toPx()
+                val plotW = (size.width - gutter).coerceAtLeast(1f)
                 detectTapGestures { offset ->
-                    val index = barIndexAt(offset.x, size.width.toFloat(), bars.size)
+                    val index = barIndexAt((offset.x - gutter).coerceAtLeast(0f), plotW, bars.size)
                     if (index >= 0) onSelect(index)
                 }
             }
             .pointerInput(bars) {
+                val gutter = Y_AXIS_WIDTH.toPx()
+                val plotW = (size.width - gutter).coerceAtLeast(1f)
                 detectHorizontalDragGestures(
                     onDragStart = { offset ->
-                        val index = barIndexAt(offset.x, size.width.toFloat(), bars.size)
+                        val index = barIndexAt((offset.x - gutter).coerceAtLeast(0f), plotW, bars.size)
                         if (index >= 0) onSelect(index)
                     },
                     onHorizontalDrag = { change, _ ->
-                        val index = barIndexAt(change.position.x, size.width.toFloat(), bars.size)
+                        val index = barIndexAt(
+                            (change.position.x - gutter).coerceAtLeast(0f), plotW, bars.size,
+                        )
                         if (index >= 0) onSelect(index)
                         change.consume()
                     },
@@ -162,7 +178,9 @@ fun ExpenseBarChart(
         // 在绘制阶段读一次入场进度：状态读取落在 draw scope 里 → 每帧只重画、不重组
         val growValue = grow()
         val count = bars.size
-        val pitch = barPitch(size.width, count)
+        val plotLeft = Y_AXIS_WIDTH.toPx()
+        val plotW = (size.width - plotLeft).coerceAtLeast(1f)
+        val pitch = barPitch(plotW, count)
         // 柱间距固定 2dp、柱宽上限 13dp（原型 .chart-bar：flex + gap 2 + max-width 13）
         val gap = 2.dp.toPx()
         val barWidth = (pitch - gap).coerceIn(2.dp.toPx(), 9.dp.toPx())
@@ -175,92 +193,156 @@ fun ExpenseBarChart(
         fun yAt(cents: Long): Float =
             axisY - (cents / 100f / maxYuan).coerceIn(0f, 1f) * plotH
 
-        // 1) 细网格（上限 / 2/3 / 1/3），原型是实线而不是虚线
-        listOf(1f, 2f / 3f, 1f / 3f).forEach { fraction ->
+        fun centerX(index: Int): Float = plotLeft + index * pitch + pitch / 2f
+
+        // 1) 细网格 + 纵轴刻度（上限 / 2/3 / 1/3 / 0），原型是实线而不是虚线
+        listOf(1f, 2f / 3f, 1f / 3f, 0f).forEach { fraction ->
             val y = axisY - fraction * plotH
-            drawLine(
-                color = c.rule.copy(alpha = 0.55f),
-                start = Offset(0f, y),
-                end = Offset(size.width, y),
-                strokeWidth = 1.dp.toPx(),
+            if (fraction > 0f) {
+                drawLine(
+                    color = c.rule.copy(alpha = 0.55f),
+                    start = Offset(plotLeft, y),
+                    end = Offset(size.width, y),
+                    strokeWidth = 1.dp.toPx(),
+                )
+            }
+            val text = ChartMath.axisAmount(maxYuan * fraction)
+            val layout = labelCache.getOrPut("y:$text") { measurer.measure(text, labelStyle) }
+            val top = (y - layout.size.height / 2f).coerceIn(0f, axisY - layout.size.height)
+            drawText(
+                layout,
+                topLeft = Offset((plotLeft - layout.size.width - 4.dp.toPx()).coerceAtLeast(0f), top),
             )
         }
 
-        // 2) 柱子：有支出画渐变柱，零支出画一根贴着轴线的短刻度（保持"每一天都在"）
-        bars.forEachIndexed { index, bar ->
-            val left = index * pitch + (pitch - barWidth) / 2f
-            val isSelected = index == selected
-            val dimmed = selected >= 0 && !isSelected
-            if (bar.cents > 0L) {
-                // 柱子从轴线向上生长，31 根柱子依次错开 6ms（原型 .chart-bar 的 scaleY 入场）
-                val progress = ((growValue - index * 0.006f) / 0.82f).coerceIn(0f, 1f)
-                val fullTop = yAt(bar.cents)
-                val top = axisY - (axisY - fullTop) * progress
-                val barHeight = (axisY - top).coerceAtLeast(2.dp.toPx())
-                if (isSelected) {
-                    // 柔和投影：同一根柱子下移 2dp 先画一层低透明度
+        if (style == TrendChartStyle.LINE) {
+            // 2L) 折线：面积渐变 + 折线；入场按横向进度裁剪，效果与柱状图一致
+            val points = bars.mapIndexed { index, bar -> Offset(centerX(index), yAt(bar.cents)) }
+            val clipRight = plotLeft + plotW * growValue
+            if (points.isNotEmpty() && clipRight > plotLeft) {
+                clipRect(left = plotLeft, top = 0f, right = clipRight, bottom = size.height) {
+                    val area = Path().apply {
+                        moveTo(points.first().x, axisY)
+                        points.forEach { lineTo(it.x, it.y) }
+                        lineTo(points.last().x, axisY)
+                        close()
+                    }
+                    drawPath(
+                        path = area,
+                        brush = Brush.verticalGradient(
+                            colors = listOf(c.blueHi.copy(alpha = 0.26f), c.blue.copy(alpha = 0.02f)),
+                            startY = plotTop,
+                            endY = axisY,
+                        ),
+                    )
+                    val line = Path().apply {
+                        moveTo(points.first().x, points.first().y)
+                        points.drop(1).forEach { lineTo(it.x, it.y) }
+                    }
+                    drawPath(
+                        path = line,
+                        color = c.blue,
+                        style = Stroke(
+                            width = 2.dp.toPx(),
+                            cap = StrokeCap.Round,
+                            join = StrokeJoin.Round,
+                        ),
+                    )
+                }
+                // 数据点：零支出的日子不画点（避免横轴上糊一串圆点），选中点除外
+                points.forEachIndexed { index, point ->
+                    val isSelected = index == selected
+                    if (!isSelected && bars[index].cents <= 0L) return@forEachIndexed
+                    if (point.x > clipRight) return@forEachIndexed
+                    if (isSelected) {
+                        drawCircle(c.blueSoft, radius = 5.dp.toPx(), center = point)
+                        drawCircle(c.blue, radius = 2.8.dp.toPx(), center = point)
+                    } else {
+                        val dimmed = selected >= 0
+                        drawCircle(
+                            color = c.blue.copy(alpha = if (dimmed) 0.25f else 0.85f),
+                            radius = 1.9.dp.toPx(),
+                            center = point,
+                        )
+                    }
+                }
+            }
+        } else {
+            // 2B) 柱子：有支出画渐变柱，零支出画一根贴着轴线的短刻度（保持"每一天都在"）
+            bars.forEachIndexed { index, bar ->
+                val left = plotLeft + index * pitch + (pitch - barWidth) / 2f
+                val isSelected = index == selected
+                val dimmed = selected >= 0 && !isSelected
+                if (bar.cents > 0L) {
+                    // 柱子从轴线向上生长，31 根柱子依次错开 6ms（原型 .chart-bar 的 scaleY 入场）
+                    val progress = ((growValue - index * 0.006f) / 0.82f).coerceIn(0f, 1f)
+                    val fullTop = yAt(bar.cents)
+                    val top = axisY - (axisY - fullTop) * progress
+                    val barHeight = (axisY - top).coerceAtLeast(2.dp.toPx())
+                    if (isSelected) {
+                        // 柔和投影：同一根柱子下移 2dp 先画一层低透明度
+                        drawPath(
+                            path = barPath(
+                                left = left,
+                                top = top + 2.dp.toPx(),
+                                width = barWidth,
+                                height = barHeight,
+                                radiusTop = 5.dp.toPx(),
+                                radiusBottom = 1.dp.toPx(),
+                            ),
+                            color = c.blueDeep.copy(alpha = 0.22f * progress),
+                        )
+                    }
+                    val alpha = if (dimmed) 0.3f else 1f
                     drawPath(
                         path = barPath(
                             left = left,
-                            top = top + 2.dp.toPx(),
+                            top = top,
                             width = barWidth,
                             height = barHeight,
                             radiusTop = 5.dp.toPx(),
                             radiusBottom = 1.dp.toPx(),
                         ),
-                        color = c.blueDeep.copy(alpha = 0.22f * progress),
+                        brush = Brush.verticalGradient(
+                            colors = if (isSelected) {
+                                // 选中柱：强调色深→亮（原来深蓝→玉绿，会让柱子下半截永远发绿）
+                                listOf(c.blueDeep, c.blueHi)
+                            } else {
+                                listOf(
+                                    c.blue.copy(alpha = 0.67f * alpha),
+                                    c.blueHi.copy(alpha = 0.92f * alpha),
+                                )
+                            },
+                            startY = top,
+                            endY = axisY,
+                        ),
+                    )
+                    if (isSelected && progress > 0.92f) {
+                        // 柱顶指示点用强调色，不掺语义绿
+                        val dotX = left + barWidth / 2f
+                        val dotY = (fullTop - 9.dp.toPx()).coerceAtLeast(4.dp.toPx())
+                        drawCircle(c.blueSoft, radius = 5.dp.toPx(), center = Offset(dotX, dotY))
+                        drawCircle(c.blue, radius = 2.5.dp.toPx(), center = Offset(dotX, dotY))
+                    }
+                } else {
+                    drawLine(
+                        color = c.ruleStrong.copy(alpha = 0.5f),
+                        start = Offset(left, axisY - 1.dp.toPx()),
+                        end = Offset(left + barWidth, axisY - 1.dp.toPx()),
+                        strokeWidth = 1.5.dp.toPx(),
+                        cap = StrokeCap.Round,
                     )
                 }
-                val alpha = if (dimmed) 0.3f else 1f
-                drawPath(
-                    path = barPath(
-                        left = left,
-                        top = top,
-                        width = barWidth,
-                        height = barHeight,
-                        radiusTop = 5.dp.toPx(),
-                        radiusBottom = 1.dp.toPx(),
-                    ),
-                    brush = Brush.verticalGradient(
-                        colors = if (isSelected) {
-                            // 选中柱：强调色深→亮（原来深蓝→玉绿，会让柱子下半截永远发绿）
-                            listOf(c.blueDeep, c.blueHi)
-                        } else {
-                            listOf(
-                                c.blue.copy(alpha = 0.67f * alpha),
-                                c.blueHi.copy(alpha = 0.92f * alpha),
-                            )
-                        },
-                        startY = top,
-                        endY = axisY,
-                    ),
-                )
-                if (isSelected && progress > 0.92f) {
-                    // 柱顶指示点用强调色，不掺语义绿
-                    val dotX = left + barWidth / 2f
-                    val dotY = (fullTop - 9.dp.toPx()).coerceAtLeast(4.dp.toPx())
-                    drawCircle(c.blueSoft, radius = 5.dp.toPx(), center = Offset(dotX, dotY))
-                    drawCircle(c.blue, radius = 2.5.dp.toPx(), center = Offset(dotX, dotY))
-                }
-            } else {
-                drawLine(
-                    color = c.ruleStrong.copy(alpha = 0.5f),
-                    start = Offset(left, axisY - 1.dp.toPx()),
-                    end = Offset(left + barWidth, axisY - 1.dp.toPx()),
-                    strokeWidth = 1.5.dp.toPx(),
-                    cap = StrokeCap.Round,
-                )
             }
         }
 
         // 3) 轴线 + X 轴小刻度（ChartMath 已经算好"哪几根标数字"）
-        drawLine(c.rule, Offset(0f, axisY), Offset(size.width, axisY), strokeWidth = 1.dp.toPx())
+        drawLine(c.rule, Offset(plotLeft, axisY), Offset(size.width, axisY), strokeWidth = 1.dp.toPx())
         bars.forEachIndexed { index, bar ->
             val label = bar.axisLabel ?: return@forEachIndexed
-            val layout = labelCache.getOrPut(label) { measurer.measure(label, labelStyle) }
-            val centerX = index * pitch + pitch / 2f
-            val x = (centerX - layout.size.width / 2f)
-                .coerceIn(0f, (size.width - layout.size.width).coerceAtLeast(0f))
+            val layout = labelCache.getOrPut("x:$label") { measurer.measure(label, labelStyle) }
+            val x = (centerX(index) - layout.size.width / 2f)
+                .coerceIn(plotLeft, (size.width - layout.size.width).coerceAtLeast(plotLeft))
             drawText(layout, topLeft = Offset(x, axisY + 4.dp.toPx()))
         }
     }

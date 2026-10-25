@@ -69,6 +69,10 @@ interface TransactionDao {
     )
     fun observeRows(startMillis: Long, endMillis: Long): Flow<List<TransactionRow>>
 
+    /** 最早一笔账单的时间戳（存款页「全部显示」用它决定起始月）；没有账单时为 null */
+    @Query("SELECT MIN(timestamp) FROM transactions")
+    fun observeEarliestTimestamp(): Flow<Long?>
+
     @Query(
         """SELECT type AS type, SUM(amountCents) AS totalCents FROM transactions
            WHERE timestamp >= :startMillis AND timestamp < :endMillis
@@ -130,6 +134,14 @@ interface TransactionDao {
     suspend fun findIdByExternalId(externalId: String): Long?
 
     /**
+     * 删除某计划自动入账的账单（删除计划时可选回滚）。
+     * 计划账单的 externalId 形如 `PLAN_INST:<计划id>:<期数>` / `PLAN_REC:<计划id>:<次数>`，
+     * 用前缀通配匹配即可精确圈定该计划。
+     */
+    @Query("DELETE FROM transactions WHERE externalId LIKE :pattern")
+    suspend fun deleteByExternalIdPattern(pattern: String): Int
+
+    /**
      * 页面补充了可信支付方式后重新匹配账户：只更新账户，不动金额/分类/商户（用户编辑保护由调用方判断）。
      * 账户余额与统计由 Room 的 Flow 自动刷新。
      */
@@ -140,14 +152,22 @@ interface TransactionDao {
     @Query("UPDATE transactions SET flowId = :flowId WHERE externalId = :externalId AND flowId = ''")
     suspend fun updateFlowIdByExternalId(externalId: String, flowId: String)
 
-    /** 悬浮卡编辑同步：金额/分类/账户/商户回写已入账的交易（「忽略」与「撤销」走删除） */
+    /** 悬浮卡编辑同步：金额/分类/账户/商户/是否计入资产回写已入账的交易（「忽略」与「撤销」走删除） */
     @Query(
         """UPDATE transactions
            SET amountCents = :amountCents, categoryId = :categoryId,
-               accountId = :accountId, counterparty = :counterparty
+               accountId = :accountId, counterparty = :counterparty,
+               excludeFromAssets = :excludeFromAssets
            WHERE id = :id"""
     )
-    suspend fun updateEnteredFields(id: Long, amountCents: Long, categoryId: Long, accountId: Long, counterparty: String)
+    suspend fun updateEnteredFields(
+        id: Long,
+        amountCents: Long,
+        categoryId: Long,
+        accountId: Long,
+        counterparty: String,
+        excludeFromAssets: Boolean,
+    )
 
     /** 登记退款的候选：近 60 天还没标「已退款」的支出（供"无金额退款通知→选被退款的账单"使用） */
     @Query(

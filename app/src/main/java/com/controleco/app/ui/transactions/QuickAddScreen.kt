@@ -103,6 +103,7 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     var date by remember { mutableStateOf(LocalDate.now()) }
     var counterparty by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
+    var excludeFromAssets by remember { mutableStateOf(false) }
     var showMore by remember { mutableStateOf(false) }
     var categoryExpanded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -178,6 +179,7 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 }
                 vm.saveTransaction(
                     -1L, type, amount, categoryId!!, accountId!!, ts, note.trim(), counterparty.trim(),
+                    excludeFromAssets,
                 )
                 EcoToast.show("已记一笔")
                 onBack()
@@ -280,6 +282,14 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                             minHeight = 34.dp,
                         )
                     }
+                    Spacer(Modifier.height(6.dp))
+                    // 不计入资产：账户余额/资产不变，账单与收支统计照常
+                    TxSwitchField(
+                        label = "计入资产统计",
+                        subtitle = "关闭后这笔账不影响账户余额与资产，但仍计入账单和收支统计",
+                        checked = !excludeFromAssets,
+                        onCheckedChange = { excludeFromAssets = !it },
+                    )
                 }
             }
 

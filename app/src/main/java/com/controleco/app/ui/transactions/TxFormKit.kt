@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -50,6 +51,7 @@ import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.eco.EcoChip
 import com.controleco.app.ui.eco.EcoSegmented
+import com.controleco.app.ui.eco.EcoSwitch
 import com.controleco.app.ui.theme.EcoType
 import com.controleco.app.ui.theme.accBook
 import com.controleco.app.ui.theme.categoryColor
@@ -257,6 +259,35 @@ fun TxDateField(
             )
             Icon(icon, contentDescription = "选择日期", tint = c.muted, modifier = Modifier.size(15.dp))
         }
+    }
+}
+
+/**
+ * 紧凑开关行：左侧标题（可带副标）+ 右侧开关。
+ * 记账 / 编辑记录 / 悬浮窗确认卡共用「是否计入资产统计」开关。
+ */
+@Composable
+fun TxSwitchField(
+    label: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    subtitle: String? = null,
+) {
+    val c = MaterialTheme.eco
+    Row(
+        modifier.fillMaxWidth().heightIn(min = 34.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(label, style = TxToggleStyle, color = c.ink, maxLines = 1)
+            if (subtitle != null) {
+                Spacer(Modifier.height(2.dp))
+                Text(subtitle, style = EcoType.PageNote, color = c.quiet, maxLines = 2)
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        EcoSwitch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 

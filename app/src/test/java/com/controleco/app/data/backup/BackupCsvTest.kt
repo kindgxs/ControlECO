@@ -97,4 +97,28 @@ class BackupCsvTest {
     fun `非备份文件返回空`() {
         assertNull(BackupCsv.parseRows(CsvReader.parse("日期,金额\n2026-10-24,1.00")))
     }
+
+    @Test
+    fun `商户归类随备份还原_重复项去重`() {
+        val text = sampleCsv() + "\n" + """
+            ##merchant_rules|商户归类
+            id,matchKey,type,categoryId,accountId,hits,updatedAt
+            1,老王包子,EXPENSE,2,2,3,1750000000000
+            1,老王包子,EXPENSE,2,2,5,1750000000000
+            2,滴滴出行,EXPENSE,1,,1,1750000000000
+        """.trimIndent()
+        val data = BackupCsv.parseRows(CsvReader.parse(text))!!
+        assertEquals(2, data.merchantRules.size)
+
+        val bun = data.merchantRules.first { it.matchKey == "老王包子" }
+        assertEquals(TxType.EXPENSE, bun.type)
+        // 分类/账户按「名称 → 新 id」映射后的结果（二级分类「早餐」= 2，「招商信用卡」= 2）
+        assertEquals(2L, bun.categoryId)
+        assertEquals(2L, bun.accountId)
+        assertEquals(3, bun.hits)
+
+        val didi = data.merchantRules.first { it.matchKey == "滴滴出行" }
+        assertEquals(1L, didi.categoryId)
+        assertNull(didi.accountId)
+    }
 }

@@ -89,6 +89,7 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
     var timeOfDay by remember { mutableStateOf(LocalTime.now()) }
     var counterparty by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
+    var excludeFromAssets by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
@@ -104,6 +105,7 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
             timeOfDay = local.toLocalTime()
             counterparty = t.counterparty
             note = t.note
+            excludeFromAssets = t.excludeFromAssets
         }
     }
 
@@ -138,6 +140,7 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
                     .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
                 vm.saveTransaction(
                     txId, type, value, categoryId!!, accountId!!, ts, note.trim(), counterparty.trim(),
+                    excludeFromAssets,
                 )
                 EcoToast.show(if (txId > 0) "已保存修改" else "已记一笔")
                 onBack()
@@ -309,6 +312,16 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
                 onValueChange = { note = it },
                 modifier = Modifier.fillMaxWidth(),
                 placeholder = "可选",
+            )
+
+            Spacer(Modifier.height(15.dp))
+            TxSectionLabel("资产")
+            Spacer(Modifier.height(8.dp))
+            TxSwitchField(
+                label = "计入资产统计",
+                subtitle = "关闭后这笔账不影响账户余额与资产，但仍计入账单和收支统计",
+                checked = !excludeFromAssets,
+                onCheckedChange = { excludeFromAssets = !it },
             )
 
             val message = error

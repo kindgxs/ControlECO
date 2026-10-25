@@ -187,6 +187,8 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
         }
     }
     var selectedBar by remember(bars) { mutableIntStateOf(defaultBarIndex) }
+    // 支出节奏图样式由页面持有（与入场进度同理：滑出屏幕不重置）
+    var trendStyle by remember { mutableStateOf(TrendChartStyle.BAR) }
 
     // 分类切片：实际支出（本期，已排除被标「已退款」的支出）+ 分类预算（年视角按 12 个月合计）
     val slices = remember(rolledCategory, categoryBudgets, categories, mode) {
@@ -302,6 +304,8 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
                     selected = selectedBar,
                     onSelect = { selectedBar = it },
                     grow = { barGrow.value },
+                    style = trendStyle,
+                    onStyleChange = { trendStyle = it },
                 )
             }
 
@@ -766,6 +770,9 @@ private fun TrendCard(
     onSelect: (Int) -> Unit,
     /** 柱状图入场进度 0..1，由页面持有（滑出屏幕不重播），见 `StatsScreen` 顶部注释 */
     grow: () -> Float,
+    /** 支出节奏图样式：柱形 / 折线 */
+    style: TrendChartStyle,
+    onStyleChange: (TrendChartStyle) -> Unit,
 ) {
     val c = MaterialTheme.eco
     val selectedBar = bars.getOrNull(selected)
@@ -793,6 +800,17 @@ private fun TrendCard(
                     style = EcoType.SectionTitle.copy(fontSize = 12.5.sp),
                     color = c.ink,
                     maxLines = 1,
+                )
+                Spacer(Modifier.width(8.dp))
+                EcoSegmented(
+                    options = listOf("柱形", "折线"),
+                    selectedIndex = if (style == TrendChartStyle.BAR) 0 else 1,
+                    onSelect = {
+                        onStyleChange(if (it == 0) TrendChartStyle.BAR else TrendChartStyle.LINE)
+                    },
+                    modifier = Modifier.width(74.dp),
+                    height = 24.dp,
+                    small = true,
                 )
                 Spacer(Modifier.weight(1f))
                 Text(
@@ -831,7 +849,7 @@ private fun TrendCard(
                             )
                             Spacer(Modifier.height(4.dp))
                             Text(
-                                "记一笔后这里会出现柱状图",
+                                "记一笔后这里会出现图表",
                                 style = EcoType.PageNote.copy(fontSize = 9.sp),
                                 color = c.quiet,
                             )
@@ -844,6 +862,7 @@ private fun TrendCard(
                         onSelect = onSelect,
                         grow = grow,
                         height = 200.dp,
+                        style = style,
                     )
                 }
                 Spacer(Modifier.height(12.dp))

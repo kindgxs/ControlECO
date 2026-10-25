@@ -25,6 +25,8 @@ internal data class DismissSnapshot(
     val categoryId: Long?,
     val accountId: Long?,
     val counterparty: String,
+    /** 关闭时卡内的「不计入资产统计」选择（自动入账默认 false = 计入） */
+    val excludeFromAssets: Boolean = false,
     /** 用户在卡片里改过任何字段（没有改动就不必回写数据库） */
     val edited: Boolean = false,
 )

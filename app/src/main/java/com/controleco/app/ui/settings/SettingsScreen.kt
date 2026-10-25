@@ -23,6 +23,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,8 +52,12 @@ import com.controleco.app.ui.common.SettingsSection
 import com.controleco.app.ui.common.SettingsSwitchRow
 import com.controleco.app.ui.common.SettingsValueRow
 import com.controleco.app.ui.common.formatTimestamp
+import com.controleco.app.ui.eco.EcoGhostButton
 import com.controleco.app.ui.eco.EcoHeroCard
+import com.controleco.app.ui.eco.EcoIconButton
 import com.controleco.app.ui.eco.EcoPillTone
+import com.controleco.app.ui.eco.EcoPrimaryButton
+import com.controleco.app.ui.eco.EcoSheet
 import com.controleco.app.ui.eco.EcoToast
 import com.controleco.app.ui.theme.EcoType
 import com.controleco.app.ui.theme.eco
@@ -60,6 +65,7 @@ import com.controleco.app.ui.theme.onHero
 import com.controleco.app.ui.theme.onHeroChip
 import com.controleco.app.ui.theme.onHeroMuted
 import com.controleco.app.util.AppLog
+import java.time.YearMonth
 
 // 深色状态卡上的前景色：由主题推导（hero 渐变永远偏深，但色相跟主题走），
 // 原来是固定的青绿常量，换主题后会出现「紫底绿字」。
@@ -116,6 +122,10 @@ fun SettingsScreen(
     val pendingCount by vm.pendingCount.collectAsStateWithLifecycle()
     val rules by vm.merchantRules.collectAsStateWithLifecycle(initialValue = emptyList())
     val homeQuickAdd by vm.homeQuickAddEnabled.collectAsStateWithLifecycle()
+    val depositStart by vm.depositPlanStartMonth.collectAsStateWithLifecycle()
+
+    var showDepositStart by remember { mutableStateOf(false) }
+    var depositStartDraft by remember { mutableStateOf(YearMonth.now()) }
 
     val listenerGranted = remember(resumeTick) { vm.isListenerGranted() }
     val a11yGranted = remember(resumeTick) { vm.isA11yEnabled() }
@@ -211,6 +221,20 @@ fun SettingsScreen(
                 checked = homeQuickAdd,
                 onCheckedChange = { vm.setHomeQuickAddEnabled(it) },
             )
+            SettingsDivider()
+            // 存款页「每月存款」的起始月份：未设置时默认显示近 12 个月
+            SettingsRow(
+                title = "存款计划开始时间",
+                subtitle = "每月存款从这一月起显示；未设置时默认显示近 12 个月",
+                icon = EcoIcons.Calendar,
+                iconTint = MaterialTheme.eco.jade,
+                trail = depositStart?.let { "${it.year} 年 ${it.monthValue} 月" } ?: "未设置",
+                showChevron = true,
+                onClick = {
+                    depositStartDraft = depositStart ?: YearMonth.now()
+                    showDepositStart = true
+                },
+            )
         }
 
         SettingsSection(title = "系统", aside = "SYSTEM / 系统")
@@ -281,6 +305,99 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(top = 17.dp, bottom = 8.dp),
+        )
+    }
+
+    if (showDepositStart) {
+        val draft = depositStartDraft
+        val now = YearMonth.now()
+        EcoSheet(
+            onDismiss = { showDepositStart = false },
+            title = "存款计划开始时间",
+            subtitle = "存款页「每月存款」默认从这里显示到本月",
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)) {
+                MonthStepper(
+                    label = "年份",
+                    value = "${draft.year} 年",
+                    canPrev = draft.year > 2000,
+                    canNext = draft.year < now.year,
+                    onPrev = { depositStartDraft = draft.minusYears(1) },
+                    onNext = { depositStartDraft = draft.plusYears(1) },
+                )
+                Spacer(Modifier.height(8.dp))
+                MonthStepper(
+                    label = "月份",
+                    value = "${draft.monthValue} 月",
+                    canPrev = draft > YearMonth.of(2000, 1),
+                    canNext = draft < now,
+                    onPrev = { depositStartDraft = draft.minusMonths(1) },
+                    onNext = { depositStartDraft = draft.plusMonths(1) },
+                )
+                Spacer(Modifier.height(14.dp))
+                EcoPrimaryButton(
+                    text = "保存开始月份",
+                    onClick = {
+                        // 防御：步进器允许跨年，可能落到未来月份；保存时收回到本月
+                        vm.setDepositPlanStartMonth(if (draft.isAfter(now)) now else draft)
+                        showDepositStart = false
+                        EcoToast.show("已保存存款计划开始时间")
+                    },
+                )
+                if (depositStart != null) {
+                    Spacer(Modifier.height(8.dp))
+                    EcoGhostButton(
+                        text = "清除（不设置开始时间）",
+                        onClick = {
+                            vm.setDepositPlanStartMonth(null)
+                            showDepositStart = false
+                            EcoToast.show("已清除存款计划开始时间")
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                Spacer(Modifier.height(14.dp))
+            }
+        }
+    }
+}
+
+/** 年 / 月步进器：左右圆形按钮 + 中间数值 */
+@Composable
+private fun MonthStepper(
+    label: String,
+    value: String,
+    canPrev: Boolean,
+    canNext: Boolean,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, style = EcoType.RowTitle.copy(fontSize = 12.sp), color = c.ink, modifier = Modifier.weight(1f))
+        EcoIconButton(
+            icon = EcoIcons.Back,
+            contentDescription = "上一步",
+            onClick = onPrev,
+            size = 30.dp,
+            enabled = canPrev,
+        )
+        Text(
+            value,
+            style = EcoType.RowTitle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold),
+            color = c.ink,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.width(90.dp),
+        )
+        EcoIconButton(
+            icon = EcoIcons.Next,
+            contentDescription = "下一步",
+            onClick = onNext,
+            size = 30.dp,
+            enabled = canNext,
         )
     }
 }

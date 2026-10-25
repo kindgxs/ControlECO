@@ -61,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.controleco.app.capture.CaptureDefaults
 import com.controleco.app.capture.MerchantRules
+import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.db.AccountEntity
 import com.controleco.app.data.db.CategoryEntity
 import com.controleco.app.data.db.PendingTransactionEntity
@@ -75,6 +76,7 @@ import com.controleco.app.ui.eco.EcoIconTile
 import com.controleco.app.ui.eco.EcoPill
 import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
+import com.controleco.app.ui.eco.EcoSwitch
 import com.controleco.app.ui.eco.EcoTextAction
 import com.controleco.app.ui.eco.ecoPressable
 import com.controleco.app.ui.theme.EcoType
@@ -114,18 +116,22 @@ internal class ConfirmCardState {
     var categories by mutableStateOf<List<CategoryEntity>>(emptyList())
     var accounts by mutableStateOf<List<AccountEntity>>(emptyList())
     var learnedRules by mutableStateOf<List<com.controleco.app.data.db.MerchantRuleEntity>>(emptyList())
+    /** 不计入资产统计：自动入账默认计入（false），用户可在卡片里改 */
+    var excludeFromAssets by mutableStateOf(false)
 
     private var amountUserEdited = false
     private var counterpartyUserEdited = false
     private var categoryUserEdited = false
     private var accountUserEdited = false
+    private var assetUserEdited = false
 
     val amountCents: Long? get() = Money.parseCents(amountText)?.takeIf { it > 0 }
     val canSubmit: Boolean get() = amountCents != null && categoryId != null && accountId != null
 
     /** 用户是否改过任何字段：关闭卡片时没有改动就不必回写数据库 */
     val userEdited: Boolean
-        get() = amountUserEdited || counterpartyUserEdited || categoryUserEdited || accountUserEdited
+        get() = amountUserEdited || counterpartyUserEdited || categoryUserEdited ||
+            accountUserEdited || assetUserEdited
 
     /** 首次绑定（新的待确认条目） */
     fun bind(
@@ -138,6 +144,8 @@ internal class ConfirmCardState {
         counterpartyUserEdited = false
         categoryUserEdited = false
         accountUserEdited = false
+        assetUserEdited = false
+        excludeFromAssets = false
         pendingId = pending.id
         type = pending.type
         isRefund = pending.refundMark == com.controleco.app.data.db.RefundMark.REFUND_INCOME
@@ -226,6 +234,12 @@ internal class ConfirmCardState {
         accountId = id
         accountUserEdited = true
     }
+
+    /** 是否计入资产统计（true = 不计入；自动入账默认计入） */
+    fun updateExcludeFromAssets(exclude: Boolean) {
+        excludeFromAssets = exclude
+        assetUserEdited = true
+    }
 }
 
 /**
@@ -250,7 +264,7 @@ internal fun ConfirmCardContent(
     state: ConfirmCardState,
     alreadyEntered: Boolean = false,
     askMode: Boolean = false,
-    onConfirm: (amountCents: Long, categoryId: Long, accountId: Long, counterparty: String) -> Unit,
+    onConfirm: (amountCents: Long, categoryId: Long, accountId: Long, counterparty: String, excludeFromAssets: Boolean) -> Unit,
     onIgnore: () -> Unit,
     onDismiss: () -> Unit,
     onUserActivity: () -> Unit = {},
@@ -258,6 +272,8 @@ internal fun ConfirmCardContent(
     val c = MaterialTheme.eco
     var showInvalid by remember { mutableStateOf(false) }
     var expandedSelector by remember { mutableStateOf(SelectorTarget.None) }
+    /** 长按一级分类后展开的二级分类选择（内嵌在卡片里，避免在悬浮窗里开 Dialog 造成 BadToken） */
+    var subPickerFor by remember { mutableStateOf<CategoryEntity?>(null) }
     var dragging by remember { mutableStateOf(false) }
     var dragOffset by remember { mutableFloatStateOf(0f) }
     val dragThresholdPx = with(LocalDensity.current) { 84.dp.toPx() }
@@ -271,7 +287,12 @@ internal fun ConfirmCardContent(
     val cardOffset = if (dragging) dragOffset else animatedOffset
 
     val catsOfType = state.categories.filter { it.type == state.type }
+    // 分类选择条只列一级分类；二级分类通过长按一级分类就地展开
+    val topCats = CategoryTree.topLevel(state.categories, state.type)
     val selectedCategory = catsOfType.firstOrNull { it.id == state.categoryId }
+    val selectedCategoryLabel = selectedCategory
+        ?.let { CategoryTree.displayName(state.categories, it.id).ifBlank { it.name } }
+        ?: "请选择"
     val selectedAccount = state.accounts.firstOrNull { it.id == state.accountId }
     val amountInvalid = state.amountText.isNotBlank() && state.amountCents == null
 
@@ -562,7 +583,7 @@ internal fun ConfirmCardContent(
                 ) {
                     ConfirmSelect(
                         label = "分类",
-                        value = selectedCategory?.name ?: "请选择",
+                        value = selectedCategoryLabel,
                         expanded = expandedSelector == SelectorTarget.Category,
                         onClick = {
                             expandedSelector = if (expandedSelector == SelectorTarget.Category) {
@@ -570,6 +591,7 @@ internal fun ConfirmCardContent(
                             } else {
                                 SelectorTarget.Category
                             }
+                            subPickerFor = null
                             onUserActivity()
                         },
                         modifier = Modifier.weight(1f),
@@ -609,7 +631,7 @@ internal fun ConfirmCardContent(
 
                 when (expandedSelector) {
                     SelectorTarget.Category -> {
-                        if (catsOfType.isEmpty()) {
+                        if (topCats.isEmpty()) {
                             Text(
                                 "暂无分类",
                                 style = EcoType.PageNote,
@@ -617,17 +639,40 @@ internal fun ConfirmCardContent(
                                 modifier = Modifier.padding(top = 8.dp),
                             )
                         } else {
-                            ChipStrip {
-                                catsOfType.forEach { category ->
-                                    CategoryChip(
-                                        category = category,
-                                        selected = category.id == state.categoryId,
-                                        onClick = {
-                                            state.selectCategory(category.id)
-                                            expandedSelector = SelectorTarget.None
-                                            onUserActivity()
-                                        },
-                                    )
+                            // 长按一级分类后，二级面板就地替换掉一级横条（避免卡片过高，也少一层重复）
+                            val picker = subPickerFor
+                            if (picker != null) {
+                                SubCategoryPanel(
+                                    parent = picker,
+                                    children = CategoryTree.childrenOf(state.categories, picker.id),
+                                    selectedId = state.categoryId,
+                                    onPick = { id ->
+                                        state.selectCategory(id)
+                                        expandedSelector = SelectorTarget.None
+                                        subPickerFor = null
+                                        onUserActivity()
+                                    },
+                                    onClose = { subPickerFor = null },
+                                )
+                            } else {
+                                ChipStrip {
+                                    topCats.forEach { category ->
+                                        CategoryChip(
+                                            category = category,
+                                            selected = category.id == state.categoryId ||
+                                                selectedCategory?.parentId == category.id,
+                                            onClick = {
+                                                state.selectCategory(category.id)
+                                                expandedSelector = SelectorTarget.None
+                                                subPickerFor = null
+                                                onUserActivity()
+                                            },
+                                            onLongClick = {
+                                                subPickerFor = category
+                                                onUserActivity()
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -659,6 +704,36 @@ internal fun ConfirmCardContent(
                     }
 
                     SelectorTarget.None -> Unit
+                }
+
+                // 是否计入资产统计：自动入账默认计入；关闭只影响账户余额/资产，账单与收支统计照常
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "计入资产统计",
+                            style = EcoType.RowSub.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                            color = c.ink,
+                        )
+                        Text(
+                            "关闭后不影响账户余额与资产，仍计入账单和收支统计",
+                            style = EcoType.PageNote.copy(fontSize = 8.5.sp),
+                            color = c.quiet,
+                            maxLines = 2,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    EcoSwitch(
+                        checked = !state.excludeFromAssets,
+                        onCheckedChange = {
+                            state.updateExcludeFromAssets(!it)
+                            onUserActivity()
+                        },
+                    )
                 }
 
                 if (showInvalid && !state.canSubmit) {
@@ -702,6 +777,7 @@ internal fun ConfirmCardContent(
                                     state.categoryId!!,
                                     state.accountId!!,
                                     state.counterparty,
+                                    state.excludeFromAssets,
                                 )
                             } else {
                                 showInvalid = true
@@ -780,7 +856,12 @@ private fun ChipStrip(content: @Composable RowScope.() -> Unit) {
 }
 
 @Composable
-private fun CategoryChip(category: CategoryEntity, selected: Boolean, onClick: () -> Unit) {
+private fun CategoryChip(
+    category: CategoryEntity,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+) {
     val c = MaterialTheme.eco
     val shape = RoundedCornerShape(10.dp)
     Row(
@@ -789,7 +870,7 @@ private fun CategoryChip(category: CategoryEntity, selected: Boolean, onClick: (
             .clip(shape)
             .background(if (selected) c.blueSoft else c.surface2)
             .border(1.dp, if (selected) c.blue.copy(alpha = 0.5f) else c.rule, shape)
-            .ecoPressable(scaleTo = 0.96f, onClick = onClick)
+            .ecoPressable(scaleTo = 0.96f, onLongClick = onLongClick, onClick = onClick)
             .padding(horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -848,6 +929,73 @@ private fun AccountChip(account: AccountEntity, selected: Boolean, onClick: () -
                 contentDescription = null,
                 tint = c.blue,
                 modifier = Modifier.size(11.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 长按一级分类后展开的「小窗口」：就地列出二级分类，也可以继续记在一级分类上。
+ * 悬浮窗是系统 overlay 窗口，这里刻意不用 Dialog/BottomSheet（无 Activity token 会 BadToken），
+ * 而是卡内嵌一小块带阴影的面板，交互与视觉都与卡内其它选择器一致。
+ */
+@Composable
+private fun SubCategoryPanel(
+    parent: CategoryEntity,
+    children: List<CategoryEntity>,
+    selectedId: Long?,
+    onPick: (Long) -> Unit,
+    onClose: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    val shape = RoundedCornerShape(12.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp)
+            .shadow(
+                elevation = 10.dp,
+                shape = shape,
+                clip = false,
+                ambientColor = c.ink.copy(alpha = 0.10f),
+                spotColor = c.ink.copy(alpha = 0.16f),
+            )
+            .clip(shape)
+            .background(c.surface)
+            .border(1.dp, c.rule, shape)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "「${parent.name}」的二级分类",
+                style = EcoType.RowSub.copy(fontWeight = FontWeight.SemiBold),
+                color = c.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            EcoTextAction(text = "收起", onClick = onClose, color = c.muted)
+        }
+        ChipStrip {
+            CategoryChip(
+                category = parent,
+                selected = selectedId == parent.id,
+                onClick = { onPick(parent.id) },
+            )
+            children.forEach { child ->
+                CategoryChip(
+                    category = child,
+                    selected = selectedId == child.id,
+                    onClick = { onPick(child.id) },
+                )
+            }
+        }
+        if (children.isEmpty()) {
+            Text(
+                "还没有二级分类（可在「分类」页长按一级分类添加）",
+                style = EcoType.PageNote,
+                color = c.quiet,
+                modifier = Modifier.padding(top = 6.dp),
             )
         }
     }

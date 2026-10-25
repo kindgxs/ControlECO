@@ -41,6 +41,7 @@ import com.controleco.app.ui.eco.EcoPillTone
 import com.controleco.app.ui.eco.EcoPrimaryButton
 import com.controleco.app.ui.eco.EcoProgressBar
 import com.controleco.app.ui.eco.EcoSectionHead
+import com.controleco.app.ui.eco.EcoSegmented
 import com.controleco.app.ui.eco.EcoSheet
 import com.controleco.app.ui.eco.EcoToast
 import com.controleco.app.ui.eco.EcoTopBar
@@ -64,6 +65,8 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val current by vm.currentMonthSaving.collectAsStateWithLifecycle()
     val goal by vm.depositGoalCents.collectAsStateWithLifecycle()
     val monthGoals by vm.depositMonthGoals.collectAsStateWithLifecycle()
+    val planStart by vm.depositPlanStartMonth.collectAsStateWithLifecycle()
+    val showAll by vm.depositShowAll.collectAsStateWithLifecycle()
     var goalText by remember(goal) {
         mutableStateOf(if (goal > 0L) Money.formatCents(goal) else "")
     }
@@ -125,6 +128,31 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 EcoSectionHead(
                     title = "每月存款",
                     aside = "MONTHLY / TARGET",
+                    trailing = {
+                        Spacer(Modifier.width(10.dp))
+                        EcoSegmented(
+                            options = listOf("区间", "全部"),
+                            selectedIndex = if (showAll) 1 else 0,
+                            onSelect = { vm.setDepositShowAll(it == 1) },
+                            modifier = Modifier.width(94.dp),
+                            height = 26.dp,
+                            small = true,
+                        )
+                    },
+                )
+            }
+
+            item(key = "range") {
+                EcoPageNote(
+                    when {
+                        showAll -> "当前显示全部月份：从最早一笔账单所在月到本月"
+                        planStart != null -> {
+                            val start = planStart!!
+                            "当前显示 ${start.year} 年 ${start.monthValue} 月起至本月" +
+                                "（存款计划开始时间可在设置里修改）"
+                        }
+                        else -> "未设置存款计划开始时间，默认显示近 12 个月（可在设置里设置开始月份）"
+                    },
                 )
             }
 
@@ -148,9 +176,10 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                             custom = monthGoals.containsKey(month.month),
                             onSetGoal = {
                                 editingMonth = month.month
-                                monthGoalText = goalOf(month.month).takeIf { it > 0L }
+                                // 只回填「单独设置过」的月份（0 显示为 0）；未单独设置则留空
+                                monthGoalText = monthGoals[month.month]
                                     ?.let { Money.formatCents(it) }
-                                    ?: ""
+                                    .orEmpty()
                             },
                         )
                     }
@@ -182,7 +211,8 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     value = monthGoalText,
                     onValueChange = { monthGoalText = it },
                     placeholder = "0.00",
-                    supporting = "留空 = 无目标；清除后回落到默认目标 ${if (goal > 0L) Money.formatYuanGroupedFixed(goal) else "（未设）"}",
+                    supporting = "填 0 = 本月不设存款目标；留空 = 不做单独设置，使用默认目标" +
+                        if (goal > 0L) " ${Money.formatYuanGroupedFixed(goal)}" else "",
                 )
                 Spacer(Modifier.height(12.dp))
                 EcoPrimaryButton(
@@ -194,9 +224,15 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                             EcoToast.show("目标金额格式不正确", EcoPillTone.Bad)
                             return@EcoPrimaryButton
                         }
-                        vm.setDepositGoalFor(month, cents ?: 0L)
-                        editingMonth = null
-                        EcoToast.show("已保存 ${month.monthValue} 月目标")
+                        if (cents == null) {
+                            vm.setDepositGoalFor(month, null)
+                            editingMonth = null
+                            EcoToast.show("已恢复默认目标")
+                        } else {
+                            vm.setDepositGoalFor(month, cents)
+                            editingMonth = null
+                            EcoToast.show("已保存 ${month.monthValue} 月目标")
+                        }
                     },
                 )
                 if (monthGoals.containsKey(month)) {
@@ -204,7 +240,7 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     EcoGhostButton(
                         text = "用默认目标（清除本月设置）",
                         onClick = {
-                            vm.setDepositGoalFor(month, 0L)
+                            vm.setDepositGoalFor(month, null)
                             editingMonth = null
                             EcoToast.show("已恢复默认目标")
                         },
@@ -297,10 +333,12 @@ private fun MonthSavingCard(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text(
-                            if (goalCents > 0L) {
-                                if (custom) "目标 ${Money.formatYuanGrouped(goalCents)}" else "目标 ${Money.formatYuanGrouped(goalCents)}（默认）"
-                            } else {
-                                "设目标"
+                            when {
+                                goalCents > 0L && custom -> "目标 ${Money.formatYuanGrouped(goalCents)}"
+                                goalCents > 0L -> "目标 ${Money.formatYuanGrouped(goalCents)}（默认）"
+                                // 单独把某月目标设成 0 = 这个月不设存款目标
+                                custom -> "目标 0（不设）"
+                                else -> "设目标"
                             },
                             style = EcoType.PageNote.copy(fontSize = 8.5.sp),
                             color = c.blueDeep,
@@ -322,7 +360,12 @@ private fun MonthSavingCard(
                 Text(
                     ratio?.let { "${(it * 100f).roundToInt()}%" } ?: "—",
                     style = EcoType.PageNote.copy(fontSize = 9.sp),
-                    color = if (ratio == null) c.quiet else if (ratio >= 1f) c.jade else c.muted,
+                    color = when {
+                        ratio == null -> c.quiet
+                        ratio < 0f -> c.clay
+                        ratio >= 1f -> c.jade
+                        else -> c.muted
+                    },
                     modifier = Modifier.width(40.dp),
                     textAlign = TextAlign.End,
                     maxLines = 1,

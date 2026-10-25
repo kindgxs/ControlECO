@@ -848,14 +848,14 @@ object CaptureCenter {
                 learnedRules = learned,
                 alreadyEntered = alreadyEntered,
                 askMode = askMode,
-                onConfirm = { amountCents, categoryId, accountId, counterpartyText ->
+                onConfirm = { amountCents, categoryId, accountId, counterpartyText, excludeFromAssets ->
                     // 已入账模式：「保存」= 同步修改（细条可撤销整笔）；待确认模式：「记一笔」= 入账
                     mainHandler.post { ConfirmCardWindow.dismissConfirm() }
                     scope.launch {
                         if (alreadyEntered) {
-                            saveEnteredEdits(pending, amountCents, categoryId, accountId, counterpartyText, withStrip = true)
+                            saveEnteredEdits(pending, amountCents, categoryId, accountId, counterpartyText, excludeFromAssets, withStrip = true)
                         } else {
-                            confirmFromOverlay(pending, amountCents, categoryId, accountId, counterpartyText)
+                            confirmFromOverlay(pending, amountCents, categoryId, accountId, counterpartyText, excludeFromAssets)
                         }
                     }
                 },
@@ -874,7 +874,12 @@ object CaptureCenter {
                         // 关闭 = 保留这笔已入账；用户改过的字段同步回去（没改过就不写库）
                         if (snapshot.edited && canSyncOverlayEdits(snapshot) && catId != null && accId != null) {
                             AppLog.i("Overlay", "card dismissed -> sync edits #${pending.id} ${Money.formatYuan(snapshot.amountCents)}")
-                            scope.launch { saveEnteredEdits(pending, snapshot.amountCents, catId, accId, snapshot.counterparty, withStrip = true) }
+                            scope.launch {
+                                saveEnteredEdits(
+                                    pending, snapshot.amountCents, catId, accId,
+                                    snapshot.counterparty, snapshot.excludeFromAssets, withStrip = true,
+                                )
+                            }
                         } else {
                             AppLog.i("Overlay", "card dismissed -> entry kept #${pending.id} (edited=${snapshot.edited})")
                         }
@@ -884,7 +889,12 @@ object CaptureCenter {
                     } else if (dismissOutcome(snapshot) == DismissOutcome.ENTER && catId != null && accId != null) {
                         // 待确认条目：关闭 = 视为入账（旧语义）
                         AppLog.i("Overlay", "card dismissed -> enter #${pending.id} ${Money.formatYuan(snapshot.amountCents)}")
-                        scope.launch { confirmFromOverlay(pending, snapshot.amountCents, catId, accId, snapshot.counterparty) }
+                        scope.launch {
+                            confirmFromOverlay(
+                                pending, snapshot.amountCents, catId, accId,
+                                snapshot.counterparty, snapshot.excludeFromAssets,
+                            )
+                        }
                     } else {
                         AppLog.i("Overlay", "card dismissed -> keep pending #${pending.id} (amount/category/account incomplete)")
                         scope.launch {
@@ -904,10 +914,14 @@ object CaptureCenter {
         categoryId: Long,
         accountId: Long,
         counterparty: String,
+        excludeFromAssets: Boolean,
         withStrip: Boolean,
     ) {
         val ok = runCatching {
-            PendingActions.updateEntered(db, txDao, pendingDao, merchantRuleDao, pending, categoryId, accountId, counterparty, amountCents)
+            PendingActions.updateEntered(
+                db, txDao, pendingDao, merchantRuleDao, pending,
+                categoryId, accountId, counterparty, amountCents, excludeFromAssets,
+            )
         }.onFailure { AppLog.e("Overlay", "sync entered edits failed", it) }.getOrDefault(false)
         if (!ok) {
             toast("这笔已被撤销，未更新")
@@ -943,9 +957,13 @@ object CaptureCenter {
         categoryId: Long,
         accountId: Long,
         counterparty: String,
+        excludeFromAssets: Boolean = false,
     ) {
         val txId = try {
-            PendingActions.confirm(db, txDao, pendingDao, merchantRuleDao, pending, categoryId, accountId, counterparty, amountCents)
+            PendingActions.confirm(
+                db, txDao, pendingDao, merchantRuleDao, pending,
+                categoryId, accountId, counterparty, amountCents, excludeFromAssets,
+            )
         } catch (e: Exception) {
             AppLog.e("Overlay", "confirm from overlay failed", e)
             toast("入账失败：${e.message ?: "未知错误"}")
@@ -1018,7 +1036,7 @@ object CaptureCenter {
                     accounts = accounts,
                     learnedRules = emptyList(),
                     alreadyEntered = true, // 样例按真实形态展示（"已记入一笔支出"，改/删都只是 Toast）
-                    onConfirm = { _, _, _, _ ->
+                    onConfirm = { _, _, _, _, _ ->
                         mainHandler.post { ConfirmCardWindow.dismissConfirm() }
                         toast("测试卡片：保存（样例不入账）")
                     },
