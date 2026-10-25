@@ -107,6 +107,7 @@ object PlanAutoPoster {
                     excludeFromAssets = InstallmentMath.excludesAsset(
                         plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
                     ),
+                    countInStats = plan.countInStats,
                 ),
             )
         }
@@ -157,6 +158,7 @@ object PlanAutoPoster {
                     excludeFromAssets = InstallmentMath.excludesAssetAt(
                         plan.deductAsset, plan.excludeAssetPeriods, index,
                     ),
+                    countInStats = plan.countInStats,
                 ),
             )
         }

@@ -83,8 +83,11 @@ fun CalendarScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     var selectedDate by rememberSaveable { mutableStateOf(LocalDate.now().toString()) }
 
     val monthRows = rows.orEmpty()
-    val byDay = remember(monthRows) { CalendarMath.byDay(monthRows, zone) }
-    val totals = remember(monthRows) { CalendarMath.totals(monthRows) }
+    // 日历的日收支与月汇总属于统计口径：剔除「不计入账单和收支统计」的记录；
+    // 当天明细列表仍用全量（选「否」的那笔要能在账单/日历里看到这一条）
+    val statsRows = remember(monthRows) { monthRows.filter { it.countInStats } }
+    val byDay = remember(statsRows) { CalendarMath.byDay(statsRows, zone) }
+    val totals = remember(statsRows) { CalendarMath.totals(statsRows) }
     val selected = runCatching { LocalDate.parse(selectedDate) }.getOrNull() ?: LocalDate.now()
     val dayRows = remember(monthRows, selected) {
         monthRows.filter {

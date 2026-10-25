@@ -66,7 +66,7 @@ internal object ConfirmCardWindow {
 
     /**
      * 展示确认卡。返回 false = 窗口没弹出来（无权限/被拦截），调用方必须回落通知。
-     * [onConfirm] 的五个参数：金额分、分类 id、账户 id、商户/备注、是否不计入资产统计；
+     * [onConfirm] 的参数：金额分、分类 id、账户 id、商户/备注、是否不计入资产统计、是否计入收支统计；
      * [onDismiss] = 关闭（✕ / 点卡片**外**的透明区 / 标题与把手下拉 / 60s 无操作），携带卡内当前值
      * —— 关闭视为入账，由调用方按 [dismissOutcome] 决定落账或保留待确认。
      */
@@ -77,7 +77,14 @@ internal object ConfirmCardWindow {
         learnedRules: List<com.controleco.app.data.db.MerchantRuleEntity> = emptyList(),
         alreadyEntered: Boolean = false,
         askMode: Boolean = false,
-        onConfirm: (amountCents: Long, categoryId: Long, accountId: Long, counterparty: String, excludeFromAssets: Boolean) -> Unit,
+        onConfirm: (
+            amountCents: Long,
+            categoryId: Long,
+            accountId: Long,
+            counterparty: String,
+            excludeFromAssets: Boolean,
+            countInStats: Boolean,
+        ) -> Unit,
         onIgnore: () -> Unit,
         onDismiss: (DismissSnapshot) -> Unit,
     ): Boolean {
@@ -93,8 +100,8 @@ internal object ConfirmCardWindow {
                 state = state,
                 alreadyEntered = alreadyEntered,
                 askMode = askMode,
-                onConfirm = { amountCents, categoryId, accountId, counterparty, excludeFromAssets ->
-                    onConfirm(amountCents, categoryId, accountId, counterparty, excludeFromAssets)
+                onConfirm = { amountCents, categoryId, accountId, counterparty, excludeFromAssets, countInStats ->
+                    onConfirm(amountCents, categoryId, accountId, counterparty, excludeFromAssets, countInStats)
                 },
                 onIgnore = onIgnore,
                 onDismiss = { handleDismiss() },
@@ -237,6 +244,7 @@ internal object ConfirmCardWindow {
             accountId = state.accountId,
             counterparty = state.counterparty,
             excludeFromAssets = state.excludeFromAssets,
+            countInStats = state.countInStats,
             edited = state.userEdited,
         )
         if (dismissConfirm()) cb(snapshot)

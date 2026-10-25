@@ -104,6 +104,7 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     var counterparty by remember { mutableStateOf("") }
     var note by remember { mutableStateOf("") }
     var excludeFromAssets by remember { mutableStateOf(false) }
+    var countInStats by remember { mutableStateOf(true) }
     var showMore by remember { mutableStateOf(false) }
     var categoryExpanded by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -179,7 +180,7 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 }
                 vm.saveTransaction(
                     -1L, type, amount, categoryId!!, accountId!!, ts, note.trim(), counterparty.trim(),
-                    excludeFromAssets,
+                    excludeFromAssets, countInStats,
                 )
                 EcoToast.show("已记一笔")
                 onBack()
@@ -289,6 +290,14 @@ fun QuickAddScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         subtitle = "关闭后这笔账不影响账户余额与资产，但仍计入账单和收支统计",
                         checked = !excludeFromAssets,
                         onCheckedChange = { excludeFromAssets = !it },
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    // 不计入统计：只在账单里留一条记录，收支/预算/存款都不算它（与上一项互不影响）
+                    TxSwitchField(
+                        label = "计入账单和收支统计",
+                        subtitle = "关闭后只在账单显示一条记录，不计入收支/预算/存款统计",
+                        checked = countInStats,
+                        onCheckedChange = { countInStats = it },
                     )
                 }
             }

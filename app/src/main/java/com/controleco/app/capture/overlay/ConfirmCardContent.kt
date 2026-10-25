@@ -118,12 +118,15 @@ internal class ConfirmCardState {
     var learnedRules by mutableStateOf<List<com.controleco.app.data.db.MerchantRuleEntity>>(emptyList())
     /** 不计入资产统计：自动入账默认计入（false），用户可在卡片里改 */
     var excludeFromAssets by mutableStateOf(false)
+    /** 不计入账单和收支统计：自动入账默认计入（true），与上一项互不影响 */
+    var countInStats by mutableStateOf(true)
 
     private var amountUserEdited = false
     private var counterpartyUserEdited = false
     private var categoryUserEdited = false
     private var accountUserEdited = false
     private var assetUserEdited = false
+    private var statsUserEdited = false
 
     val amountCents: Long? get() = Money.parseCents(amountText)?.takeIf { it > 0 }
     val canSubmit: Boolean get() = amountCents != null && categoryId != null && accountId != null
@@ -131,7 +134,7 @@ internal class ConfirmCardState {
     /** 用户是否改过任何字段：关闭卡片时没有改动就不必回写数据库 */
     val userEdited: Boolean
         get() = amountUserEdited || counterpartyUserEdited || categoryUserEdited ||
-            accountUserEdited || assetUserEdited
+            accountUserEdited || assetUserEdited || statsUserEdited
 
     /** 首次绑定（新的待确认条目） */
     fun bind(
@@ -145,7 +148,9 @@ internal class ConfirmCardState {
         categoryUserEdited = false
         accountUserEdited = false
         assetUserEdited = false
+        statsUserEdited = false
         excludeFromAssets = false
+        countInStats = true
         pendingId = pending.id
         type = pending.type
         isRefund = pending.refundMark == com.controleco.app.data.db.RefundMark.REFUND_INCOME
@@ -240,6 +245,12 @@ internal class ConfirmCardState {
         excludeFromAssets = exclude
         assetUserEdited = true
     }
+
+    /** 是否计入账单和收支统计（自动入账默认计入；与资产开关互不影响） */
+    fun updateCountInStats(count: Boolean) {
+        countInStats = count
+        statsUserEdited = true
+    }
 }
 
 /**
@@ -264,7 +275,14 @@ internal fun ConfirmCardContent(
     state: ConfirmCardState,
     alreadyEntered: Boolean = false,
     askMode: Boolean = false,
-    onConfirm: (amountCents: Long, categoryId: Long, accountId: Long, counterparty: String, excludeFromAssets: Boolean) -> Unit,
+    onConfirm: (
+        amountCents: Long,
+        categoryId: Long,
+        accountId: Long,
+        counterparty: String,
+        excludeFromAssets: Boolean,
+        countInStats: Boolean,
+    ) -> Unit,
     onIgnore: () -> Unit,
     onDismiss: () -> Unit,
     onUserActivity: () -> Unit = {},
@@ -736,6 +754,36 @@ internal fun ConfirmCardContent(
                     )
                 }
 
+                // 是否计入账单和收支统计：自动入账默认计入；关闭后只在账单留一条记录
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "计入账单和收支统计",
+                            style = EcoType.RowSub.copy(fontSize = 10.sp, fontWeight = FontWeight.SemiBold),
+                            color = c.ink,
+                        )
+                        Text(
+                            "关闭后只在账单显示一条记录，不计入收支/预算/存款统计",
+                            style = EcoType.PageNote.copy(fontSize = 8.5.sp),
+                            color = c.quiet,
+                            maxLines = 2,
+                        )
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    EcoSwitch(
+                        checked = state.countInStats,
+                        onCheckedChange = {
+                            state.updateCountInStats(it)
+                            onUserActivity()
+                        },
+                    )
+                }
+
                 if (showInvalid && !state.canSubmit) {
                     Text(
                         "先补齐金额、分类和账户",
@@ -778,6 +826,7 @@ internal fun ConfirmCardContent(
                                     state.accountId!!,
                                     state.counterparty,
                                     state.excludeFromAssets,
+                                    state.countInStats,
                                 )
                             } else {
                                 showInvalid = true

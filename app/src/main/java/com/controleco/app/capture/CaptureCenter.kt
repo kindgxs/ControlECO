@@ -848,14 +848,14 @@ object CaptureCenter {
                 learnedRules = learned,
                 alreadyEntered = alreadyEntered,
                 askMode = askMode,
-                onConfirm = { amountCents, categoryId, accountId, counterpartyText, excludeFromAssets ->
+                onConfirm = { amountCents, categoryId, accountId, counterpartyText, excludeFromAssets, countInStats ->
                     // 已入账模式：「保存」= 同步修改（细条可撤销整笔）；待确认模式：「记一笔」= 入账
                     mainHandler.post { ConfirmCardWindow.dismissConfirm() }
                     scope.launch {
                         if (alreadyEntered) {
-                            saveEnteredEdits(pending, amountCents, categoryId, accountId, counterpartyText, excludeFromAssets, withStrip = true)
+                            saveEnteredEdits(pending, amountCents, categoryId, accountId, counterpartyText, excludeFromAssets, countInStats, withStrip = true)
                         } else {
-                            confirmFromOverlay(pending, amountCents, categoryId, accountId, counterpartyText, excludeFromAssets)
+                            confirmFromOverlay(pending, amountCents, categoryId, accountId, counterpartyText, excludeFromAssets, countInStats)
                         }
                     }
                 },
@@ -877,7 +877,8 @@ object CaptureCenter {
                             scope.launch {
                                 saveEnteredEdits(
                                     pending, snapshot.amountCents, catId, accId,
-                                    snapshot.counterparty, snapshot.excludeFromAssets, withStrip = true,
+                                    snapshot.counterparty, snapshot.excludeFromAssets, snapshot.countInStats,
+                                    withStrip = true,
                                 )
                             }
                         } else {
@@ -892,7 +893,7 @@ object CaptureCenter {
                         scope.launch {
                             confirmFromOverlay(
                                 pending, snapshot.amountCents, catId, accId,
-                                snapshot.counterparty, snapshot.excludeFromAssets,
+                                snapshot.counterparty, snapshot.excludeFromAssets, snapshot.countInStats,
                             )
                         }
                     } else {
@@ -915,12 +916,13 @@ object CaptureCenter {
         accountId: Long,
         counterparty: String,
         excludeFromAssets: Boolean,
+        countInStats: Boolean = true,
         withStrip: Boolean,
     ) {
         val ok = runCatching {
             PendingActions.updateEntered(
                 db, txDao, pendingDao, merchantRuleDao, pending,
-                categoryId, accountId, counterparty, amountCents, excludeFromAssets,
+                categoryId, accountId, counterparty, amountCents, excludeFromAssets, countInStats,
             )
         }.onFailure { AppLog.e("Overlay", "sync entered edits failed", it) }.getOrDefault(false)
         if (!ok) {
@@ -958,11 +960,13 @@ object CaptureCenter {
         accountId: Long,
         counterparty: String,
         excludeFromAssets: Boolean = false,
+        /** 计入账单和收支统计：自动入账默认 true（计入） */
+        countInStats: Boolean = true,
     ) {
         val txId = try {
             PendingActions.confirm(
                 db, txDao, pendingDao, merchantRuleDao, pending,
-                categoryId, accountId, counterparty, amountCents, excludeFromAssets,
+                categoryId, accountId, counterparty, amountCents, excludeFromAssets, countInStats,
             )
         } catch (e: Exception) {
             AppLog.e("Overlay", "confirm from overlay failed", e)
@@ -1036,7 +1040,7 @@ object CaptureCenter {
                     accounts = accounts,
                     learnedRules = emptyList(),
                     alreadyEntered = true, // 样例按真实形态展示（"已记入一笔支出"，改/删都只是 Toast）
-                    onConfirm = { _, _, _, _, _ ->
+                    onConfirm = { _, _, _, _, _, _ ->
                         mainHandler.post { ConfirmCardWindow.dismissConfirm() }
                         toast("测试卡片：保存（样例不入账）")
                     },

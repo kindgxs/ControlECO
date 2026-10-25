@@ -25,6 +25,11 @@ data class TransactionRow(
     val refundMark: RefundMark,
     /** 退款收入是否还没被用户处理（true = 出现在「待确认账单」里）。退款与原支出互不关联，没有 id 指向 */
     val refundPending: Boolean = false,
+    /**
+     * 是否计入账单和收支统计：false = 只在账单列表显示这一条，
+     * 不计入收支合计 / 分类统计 / 预算 / 存款等所有统计。
+     */
+    val countInStats: Boolean = true,
     /** 入库时间：待确认列表把捕获条目与退款条目按这个排（而不是业务时间） */
     val createdAt: Long = 0,
 )
@@ -60,6 +65,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
+           t.countInStats AS countInStats,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
@@ -76,6 +82,7 @@ interface TransactionDao {
     @Query(
         """SELECT type AS type, SUM(amountCents) AS totalCents FROM transactions
            WHERE timestamp >= :startMillis AND timestamp < :endMillis
+             AND countInStats = 1
            GROUP BY type"""
     )
     fun observeTypeTotals(startMillis: Long, endMillis: Long): Flow<List<TypeTotalRow>>
@@ -90,7 +97,8 @@ interface TransactionDao {
     @Query(
         """SELECT COALESCE(SUM(amountCents), 0) FROM transactions
            WHERE timestamp >= :startMillis AND timestamp < :endMillis
-             AND type = 'EXPENSE' AND refundMark != 'REFUNDED_EXPENSE'"""
+             AND type = 'EXPENSE' AND refundMark != 'REFUNDED_EXPENSE'
+             AND countInStats = 1"""
     )
     fun observeSpendingTotal(startMillis: Long, endMillis: Long): Flow<Long>
 
@@ -103,6 +111,7 @@ interface TransactionDao {
            FROM transactions t JOIN categories c ON t.categoryId = c.id
            WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
              AND t.type = 'EXPENSE' AND t.refundMark != 'REFUNDED_EXPENSE'
+             AND t.countInStats = 1
            GROUP BY c.id, c.name
            ORDER BY totalCents DESC"""
     )
@@ -152,12 +161,12 @@ interface TransactionDao {
     @Query("UPDATE transactions SET flowId = :flowId WHERE externalId = :externalId AND flowId = ''")
     suspend fun updateFlowIdByExternalId(externalId: String, flowId: String)
 
-    /** 悬浮卡编辑同步：金额/分类/账户/商户/是否计入资产回写已入账的交易（「忽略」与「撤销」走删除） */
+    /** 悬浮卡编辑同步：金额/分类/账户/商户/是否计入资产/是否计入统计回写已入账的交易（「忽略」与「撤销」走删除） */
     @Query(
         """UPDATE transactions
            SET amountCents = :amountCents, categoryId = :categoryId,
                accountId = :accountId, counterparty = :counterparty,
-               excludeFromAssets = :excludeFromAssets
+               excludeFromAssets = :excludeFromAssets, countInStats = :countInStats
            WHERE id = :id"""
     )
     suspend fun updateEnteredFields(
@@ -167,6 +176,7 @@ interface TransactionDao {
         accountId: Long,
         counterparty: String,
         excludeFromAssets: Boolean,
+        countInStats: Boolean,
     )
 
     /** 登记退款的候选：近 60 天还没标「已退款」的支出（供"无金额退款通知→选被退款的账单"使用） */
@@ -176,6 +186,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
+           t.countInStats AS countInStats,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
@@ -197,6 +208,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
+           t.countInStats AS countInStats,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
@@ -220,6 +232,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
+           t.countInStats AS countInStats,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id

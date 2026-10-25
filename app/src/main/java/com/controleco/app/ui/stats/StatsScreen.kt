@@ -92,7 +92,7 @@ import kotlin.math.roundToInt
 /**
  * 统计页（ECO 版）：顶栏 → 周期工具条 → 结论卡 → 每日/月度支出柱状图 → 分类占比环 → 预算对比。
  *
- * 数据流保持原样（[LedgerViewModel.periodRows] / [LedgerViewModel.periodTotals] /
+ * 数据流保持原样（[LedgerViewModel.periodStatsRows] / [LedgerViewModel.periodTotals] /
  * [LedgerViewModel.periodCategorySums] / [LedgerViewModel.categoryBudgets]），
  * 月视角每日一柱、年视角每月一柱；柱状图与圆环都是自绘 Canvas，不引第三方图表库。
  *
@@ -111,7 +111,7 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
     var showPicker by remember { mutableStateOf(false) }
     val totals by vm.periodTotals.collectAsStateWithLifecycle()
     val byCategory by vm.periodCategorySums.collectAsStateWithLifecycle()
-    val rows by vm.periodRows.collectAsStateWithLifecycle()
+    val rows by vm.periodStatsRows.collectAsStateWithLifecycle()
     val spendingTotal by vm.periodSpendingTotal.collectAsStateWithLifecycle()
     val categoryBudgets by vm.categoryBudgets.collectAsStateWithLifecycle()
     val categories by vm.categories.collectAsStateWithLifecycle()

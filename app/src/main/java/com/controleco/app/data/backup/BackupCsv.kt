@@ -52,7 +52,7 @@ object BackupCsv {
 
     private val TX_HEADER = listOf(
         "时间", "类型", "分类", "金额", "资产账户", "记录标识", "备注", "二级分类", "币种",
-        "编号", "来源", "退款状态", "退款待定", "不扣资产", "流水号", "创建时间", "商户",
+        "编号", "来源", "退款状态", "退款待定", "不扣资产", "流水号", "创建时间", "商户", "计入统计",
     )
 
     private val DATE_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -121,6 +121,7 @@ object BackupCsv {
                 t.flowId,
                 t.createdAt.toString(),
                 t.counterparty,
+                if (t.countInStats) "1" else "0",
             )
         }
 
@@ -128,6 +129,7 @@ object BackupCsv {
         out.row(
             "id", "title", "accountId", "categoryId", "totalPrincipalCents", "totalInterestCents",
             "periods", "firstDate", "postTime", "deductAsset", "excludeAssetPeriods", "postedPeriods", "note",
+            "countInStats",
         )
         data.installments.forEach { p ->
             out.row(
@@ -140,6 +142,7 @@ object BackupCsv {
                 p.excludeAssetPeriods,
                 p.postedPeriods.toString(),
                 p.note,
+                if (p.countInStats) "1" else "0",
             )
         }
 
@@ -147,7 +150,7 @@ object BackupCsv {
         out.row(
             "id", "title", "type", "amountCents", "categoryId", "accountId", "frequency",
             "intervalCount", "firstDate", "nextDate", "postTime", "deductAsset", "autoPost",
-            "endMode", "endCount", "endDate", "postedCount", "excludeAssetPeriods", "note",
+            "endMode", "endCount", "endDate", "postedCount", "excludeAssetPeriods", "note", "countInStats",
         )
         data.recurring.forEach { p ->
             out.row(
@@ -173,6 +176,7 @@ object BackupCsv {
                 p.postedCount.toString(),
                 p.excludeAssetPeriods,
                 p.note,
+                if (p.countInStats) "1" else "0",
             )
         }
 
@@ -372,6 +376,7 @@ object BackupCsv {
                     refundPending = boolOf(sec.cell(row, "退款待定")),
                     flowId = sec.cell(row, "流水号"),
                     excludeFromAssets = boolOf(sec.cell(row, "不扣资产")),
+                    countInStats = boolOf(sec.cell(row, "计入统计"), fallback = true),
                     createdAt = sec.cell(row, "创建时间").toLongOrNull() ?: timestamp,
                 )
             }
@@ -402,6 +407,7 @@ object BackupCsv {
                     firstDateMillis = parseTimestamp(sec.cell(row, "firstDate"), zone) ?: return@mapNotNull null,
                     deductAsset = boolOf(sec.cell(row, "deductAsset"), fallback = true),
                     excludeAssetPeriods = sec.cell(row, "excludeAssetPeriods"),
+                    countInStats = boolOf(sec.cell(row, "countInStats"), fallback = true),
                     postTimeMinutes = parseMinutes(sec.cell(row, "postTime")) ?: 540,
                     postedPeriods = sec.cell(row, "postedPeriods").toIntOrNull() ?: 0,
                     note = sec.cell(row, "note"),
@@ -442,6 +448,7 @@ object BackupCsv {
                     endDateMillis = parseTimestamp(sec.cell(row, "endDate"), zone) ?: 0L,
                     postedCount = sec.cell(row, "postedCount").toIntOrNull() ?: 0,
                     excludeAssetPeriods = sec.cell(row, "excludeAssetPeriods"),
+                    countInStats = boolOf(sec.cell(row, "countInStats"), fallback = true),
                     note = sec.cell(row, "note"),
                 )
             }

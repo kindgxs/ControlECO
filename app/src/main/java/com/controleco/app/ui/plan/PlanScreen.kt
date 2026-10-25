@@ -88,6 +88,8 @@ private data class InstallmentDraft(
     val postTimeMinutes: Int,
     val deductAsset: Boolean,
     val excludeAssetPeriods: String,
+    /** 计入账单和收支统计：与 deductAsset 独立 */
+    val countInStats: Boolean,
     val note: String,
 )
 
@@ -105,6 +107,8 @@ private data class RecurringDraft(
     val postTimeMinutes: Int,
     val deductAsset: Boolean,
     val excludeAssetPeriods: String,
+    /** 计入账单和收支统计：与 deductAsset 独立 */
+    val countInStats: Boolean,
     val endMode: RecurringEndMode,
     val endCount: Int,
     val endDate: LocalDate?,
@@ -265,6 +269,7 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     firstDateMillis = RecurringMath.millisAt(draft.firstDate),
                     deductAsset = draft.deductAsset,
                     excludeAssetPeriods = draft.excludeAssetPeriods,
+                    countInStats = draft.countInStats,
                     postTimeMinutes = draft.postTimeMinutes,
                     note = draft.note,
                     onResult = onResult,
@@ -302,6 +307,7 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     endCount = draft.endCount,
                     endDateMillis = draft.endDate?.let { RecurringMath.millisAt(it) } ?: 0L,
                     excludeAssetPeriods = draft.excludeAssetPeriods,
+                    countInStats = draft.countInStats,
                     note = draft.note,
                     onResult = onResult,
                 )
@@ -381,6 +387,7 @@ private fun InstallmentCard(
                                 append(" 期不扣资产")
                             }
                         }
+                        if (!plan.countInStats) append(" · 不计收支统计")
                     },
                     style = EcoType.RowSub,
                     color = c.muted,
@@ -472,6 +479,7 @@ private fun RecurringCard(
                         append(accountName).append(" · ").append(categoryName)
                         append(" · ").append(RecurringMath.describe(frequency, plan.intervalCount))
                         if (!plan.deductAsset) append(" · 不扣资产")
+                        if (!plan.countInStats) append(" · 不计收支统计")
                     },
                     style = EcoType.RowSub,
                     color = c.muted,
@@ -697,6 +705,7 @@ private fun InstallmentEditorSheet(
     var categoryId by remember(initial?.id) { mutableStateOf(initial?.categoryId ?: 0L) }
     var deduct by remember(initial?.id) { mutableStateOf(initial?.deductAsset ?: true) }
     var excludePeriodsText by remember(initial?.id) { mutableStateOf(initial?.excludeAssetPeriods ?: "") }
+    var countInStats by remember(initial?.id) { mutableStateOf(initial?.countInStats ?: true) }
     var note by remember(initial?.id) { mutableStateOf(initial?.note ?: "") }
     var localError by remember(initial?.id) { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -783,6 +792,13 @@ private fun InstallmentEditorSheet(
                     supporting = "支持单期与区间：1,3,12 或 1-3,6",
                 )
             }
+            EcoSwitchRow(
+                title = "计入账单和收支统计",
+                checked = countInStats,
+                onCheckedChange = { countInStats = it },
+                subtitle = "关闭后每期只在账单显示一条记录，不计入收支/预算/存款统计；" +
+                    "与「只记账，不扣资产」互不影响",
+            )
 
             Text(
                 "每期约 ${Money.formatYuanGroupedFixed(perPeriod)} · 总还款 " +
@@ -832,6 +848,7 @@ private fun InstallmentEditorSheet(
                                 } else {
                                     ""
                                 },
+                                countInStats = countInStats,
                                 note = note.trim(),
                             ),
                         ) { err ->
@@ -918,6 +935,7 @@ private fun RecurringEditorSheet(
     var categoryId by remember(initial?.id) { mutableStateOf(initial?.categoryId ?: 0L) }
     var deduct by remember(initial?.id) { mutableStateOf(initial?.deductAsset ?: true) }
     var excludePeriodsText by remember(initial?.id) { mutableStateOf(initial?.excludeAssetPeriods ?: "") }
+    var countInStats by remember(initial?.id) { mutableStateOf(initial?.countInStats ?: true) }
     var note by remember(initial?.id) { mutableStateOf(initial?.note ?: "") }
     var localError by remember(initial?.id) { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -1039,6 +1057,13 @@ private fun RecurringEditorSheet(
                     supporting = "按第几次入账计算，支持 1,3,12 或 1-3,6",
                 )
             }
+            EcoSwitchRow(
+                title = "计入账单和收支统计",
+                checked = countInStats,
+                onCheckedChange = { countInStats = it },
+                subtitle = "关闭后每次只在账单显示一条记录，不计入收支/预算/存款统计；" +
+                    "与「只记账，不扣资产」互不影响",
+            )
             EcoField(
                 label = "备注",
                 value = note,
@@ -1089,6 +1114,7 @@ private fun RecurringEditorSheet(
                                 } else {
                                     ""
                                 },
+                                countInStats = countInStats,
                                 endMode = endMode,
                                 endCount = if (endMode == RecurringEndMode.COUNT) {
                                     endCountText.toIntOrNull() ?: 0

@@ -469,7 +469,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     @OptIn(ExperimentalCoroutinesApi::class)
     val homePeriodRows: StateFlow<List<TransactionRow>?> = currentPeriod.flatMapLatest { period ->
         val (start, end) = period.toMillisRange(zone)
-        txDao.observeRows(start, end)
+        txDao.observeRows(start, end).map { rows -> rows.filter { it.countInStats } }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /**
@@ -551,6 +551,16 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         periodRange.flatMapLatest { (start, end) -> txDao.observeRows(start, end) }
             .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
+    /**
+     * 统计口径的本期账单行：剔除「不计入账单和收支统计」的记录。
+     * 账单列表仍用 [periodRows] 全量（选「否」的那笔要在账单里留一条记录），
+     * 图表 / 走势 / 存款这类统计一律用这一条。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    val periodStatsRows: StateFlow<List<TransactionRow>?> = periodRows
+        .map { rows -> rows?.filter { it.countInStats } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
     @OptIn(ExperimentalCoroutinesApi::class)
     val periodTotals: StateFlow<List<TypeTotalRow>?> =
         periodRange.flatMapLatest { (start, end) -> txDao.observeTypeTotals(start, end) }
@@ -617,6 +627,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         counterparty: String = "",
         /** 不计入资产统计：只影响账户余额/资产，仍照常计入账单与收支统计 */
         excludeFromAssets: Boolean = false,
+        /** 是否计入账单和收支统计：默认计入；false 时只在账单列表显示，不参与任何统计 */
+        countInStats: Boolean = true,
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             if (id > 0) {
@@ -626,6 +638,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                             type = type, amountCents = amountCents, categoryId = categoryId,
                             accountId = accountId, timestamp = timestamp, note = note,
                             counterparty = counterparty, excludeFromAssets = excludeFromAssets,
+                            countInStats = countInStats,
                         )
                     )
                     // 编辑的是捕获来的交易 → 学习这次归类（"越用越准"；手动记账不学习）
@@ -639,6 +652,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         type = type, amountCents = amountCents, categoryId = categoryId,
                         accountId = accountId, timestamp = timestamp, note = note,
                         counterparty = counterparty, excludeFromAssets = excludeFromAssets,
+                        countInStats = countInStats,
                     )
                 )
             }
@@ -1594,6 +1608,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         counterparty: String = item.counterparty,
         /** 不计入资产统计：默认 false（自动入账口径计入资产） */
         excludeFromAssets: Boolean = false,
+        /** 计入账单和收支统计：默认 true（自动入账口径计入统计） */
+        countInStats: Boolean = true,
     ) {
         // 金额待补条（0 元）不能直接入账：先在列表里补金额
         if (item.amountCents <= 0) {
@@ -1603,7 +1619,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch(Dispatchers.IO) {
             PendingActions.confirm(
                 db, txDao, pendingDao, merchantRuleDao, item,
-                categoryId, accountId, counterparty, item.amountCents, excludeFromAssets,
+                categoryId, accountId, counterparty, item.amountCents, excludeFromAssets, countInStats,
             )
         }
     }
@@ -1831,9 +1847,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         txDao.observeRows(start, end)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    /** 当月实际新增存款 = 当月收入 − 当月（未退款）支出 */
+    /** 当月实际新增存款 = 当月收入 − 当月（未退款）支出；不计入统计的记录不参与 */
     val currentMonthSaving: StateFlow<DepositMath.MonthSaving?> = combine(periodRows, currentPeriod) { rows, period ->
-        rows?.let { DepositMath.rangeSaving(it, period.start, period.endExclusive, zone) }
+        rows?.filter { it.countInStats }?.let {
+            DepositMath.rangeSaving(it, period.start, period.endExclusive, zone)
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** 含当月的连续存款趋势（缺数据的月补 0），区间随「存款计划开始月 / 全部」设置变化 */
@@ -1843,7 +1861,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         depositStartMonth,
         currentPeriod,
     ) { rows, startMonth, period ->
-        rows?.let {
+        rows?.filter { it.countInStats }?.let {
             DepositMath.trendBetween(
                 DepositMath.monthlySavings(it, zone),
                 startMonth,
@@ -1894,6 +1912,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         firstDateMillis: Long,
         deductAsset: Boolean,
         excludeAssetPeriods: String = "",
+        /** 是否计入账单和收支统计：与 deductAsset 独立，false = 每期只在账单显示一条记录 */
+        countInStats: Boolean = true,
         postTimeMinutes: Int = 540,
         note: String = "",
         onResult: (String?) -> Unit,
@@ -1921,6 +1941,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         InstallmentMath.parseExcludedPeriods(excludeAssetPeriods, periods),
                         periods,
                     ),
+                    countInStats = countInStats,
                     postTimeMinutes = postTimeMinutes.coerceIn(0, 24 * 60 - 1),
                     note = note,
                     postedPeriods = oldPlan?.postedPeriods ?: 0,
@@ -1954,6 +1975,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         endDateMillis: Long = 0L,
         excludeAssetPeriods: String = "",
         autoPost: Boolean = false,
+        /** 是否计入账单和收支统计：与 deductAsset 独立，false = 每次只在账单显示一条记录 */
+        countInStats: Boolean = true,
         note: String = "",
         onResult: (String?) -> Unit,
     ) {
@@ -2019,6 +2042,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         ),
                         InstallmentMath.MAX_PERIOD_INDEX,
                     ),
+                    countInStats = countInStats,
                     note = note,
                     createdAt = old?.createdAt ?: System.currentTimeMillis(),
                 )
@@ -2117,6 +2141,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                             excludeFromAssets = InstallmentMath.excludesAsset(
                                 plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
                             ),
+                            countInStats = plan.countInStats,
                         ),
                     )
                 }
@@ -2167,6 +2192,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                             excludeFromAssets = InstallmentMath.excludesAssetAt(
                                 plan.deductAsset, plan.excludeAssetPeriods, index,
                             ),
+                            countInStats = plan.countInStats,
                         ),
                     )
                 }

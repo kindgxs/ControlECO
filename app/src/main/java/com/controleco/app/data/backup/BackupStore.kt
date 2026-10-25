@@ -221,6 +221,7 @@ object BackupStore {
         put("refundPending", t.refundPending)
         put("flowId", t.flowId)
         put("excludeFromAssets", t.excludeFromAssets)
+        put("countInStats", t.countInStats)
         put("createdAt", t.createdAt)
     }
 
@@ -235,6 +236,7 @@ object BackupStore {
         put("firstDateMillis", p.firstDateMillis)
         put("deductAsset", p.deductAsset)
         put("excludeAssetPeriods", p.excludeAssetPeriods)
+        put("countInStats", p.countInStats)
         put("postTimeMinutes", p.postTimeMinutes)
         put("note", p.note)
         put("postedPeriods", p.postedPeriods)
@@ -260,6 +262,7 @@ object BackupStore {
         put("endDateMillis", p.endDateMillis)
         put("postedCount", p.postedCount)
         put("excludeAssetPeriods", p.excludeAssetPeriods)
+        put("countInStats", p.countInStats)
         put("note", p.note)
         put("createdAt", p.createdAt)
     }
@@ -331,6 +334,7 @@ object BackupStore {
         refundPending = o.optBoolean("refundPending"),
         flowId = o.optString("flowId"),
         excludeFromAssets = o.optBoolean("excludeFromAssets"),
+        countInStats = o.optBoolean("countInStats", true),
         createdAt = o.optLong("createdAt"),
     )
 
@@ -345,6 +349,7 @@ object BackupStore {
         firstDateMillis = o.optLong("firstDateMillis"),
         deductAsset = o.optBoolean("deductAsset", true),
         excludeAssetPeriods = o.optString("excludeAssetPeriods"),
+        countInStats = o.optBoolean("countInStats", true),
         postTimeMinutes = o.optInt("postTimeMinutes", 540),
         note = o.optString("note"),
         postedPeriods = o.optInt("postedPeriods"),
@@ -370,6 +375,7 @@ object BackupStore {
         endDateMillis = o.optLong("endDateMillis"),
         postedCount = o.optInt("postedCount"),
         excludeAssetPeriods = o.optString("excludeAssetPeriods"),
+        countInStats = o.optBoolean("countInStats", true),
         note = o.optString("note"),
         createdAt = o.optLong("createdAt"),
     )
