@@ -1,6 +1,6 @@
 <resources>
-    <string name="app_name">易控钱包</string>
-    <string name="a11y_service_label">易控钱包 支付页面采集</string>
+    <string name="app_name">易控钱包（合并版）</string>
+    <string name="a11y_service_label">易控钱包（合并版） 支付页面采集</string>
     <string name="a11y_service_description">在你已开启的支付、电商与外卖应用的支付结果页、订单详情页读取页面文字，自动提取金额、收款方与支付方式用于记账。仅在本机处理，不联网上传、不保存屏幕截图。</string>
     <string name="shortcut_quick_add_short">记一笔</string>
     <string name="shortcut_quick_add_long">记一笔（快速记账）</string>
