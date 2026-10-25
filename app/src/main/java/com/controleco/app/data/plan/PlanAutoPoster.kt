@@ -107,6 +107,9 @@ object PlanAutoPoster {
                     excludeFromAssets = InstallmentMath.excludesAsset(
                         plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
                     ),
+                    excludeFromStats = InstallmentMath.excludesStats(
+                        plan.excludeStatsPeriods, plan.periods, index,
+                    ),
                 ),
             )
         }
@@ -156,6 +159,9 @@ object PlanAutoPoster {
                     externalId = "PLAN_REC:${plan.id}:$index",
                     excludeFromAssets = InstallmentMath.excludesAssetAt(
                         plan.deductAsset, plan.excludeAssetPeriods, index,
+                    ),
+                    excludeFromStats = InstallmentMath.excludesStatsAt(
+                        plan.excludeStatsPeriods, index,
                     ),
                 ),
             )

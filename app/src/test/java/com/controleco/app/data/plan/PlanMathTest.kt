@@ -152,6 +152,23 @@ class PlanMathTest {
     }
 
     @Test
+    fun `不扣收支统计判断_按期数与次数`() {
+        // 分期：空 = 全部计入
+        assertFalse(InstallmentMath.excludesStats("", 12, 1))
+        assertFalse(InstallmentMath.excludesStats(null, 12, 12))
+        // 指定期数 / 区间
+        assertTrue(InstallmentMath.excludesStats("1-12", 12, 1))
+        assertTrue(InstallmentMath.excludesStats("1-12", 12, 12))
+        assertTrue(InstallmentMath.excludesStats("2,4", 12, 2))
+        assertFalse(InstallmentMath.excludesStats("2,4", 12, 3))
+        // 周期记账：空 = 全部计入，关闭时整体写入 1-MAX
+        assertFalse(InstallmentMath.excludesStatsAt("", 1))
+        assertTrue(InstallmentMath.excludesStatsAt("1-${InstallmentMath.MAX_PERIOD_INDEX}", 1))
+        assertTrue(InstallmentMath.excludesStatsAt("1-${InstallmentMath.MAX_PERIOD_INDEX}", 999))
+        assertFalse(InstallmentMath.excludesStatsAt("5", 4))
+    }
+
+    @Test
     fun `周期记账_每年与每N天`() {
         assertEquals(
             LocalDate.of(2027, 10, 24),

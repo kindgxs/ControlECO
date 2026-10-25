@@ -19,7 +19,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         InstallmentPlanEntity::class,
         RecurringPlanEntity::class,
     ],
-    version = 16,
+    version = 17,
     exportSchema = true,
 )
 abstract class AccBookDatabase : RoomDatabase() {
@@ -369,6 +369,26 @@ abstract class AccBookDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v17：新增「不计入账单和收支统计」。
+         * - 账单：`excludeFromStats`（0 = 计入，1 = 只在账单列表显示）；
+         * - 分期 / 周期：`excludeStatsPeriods`（与不扣资产期数同格式）。
+         * 全部默认计入，历史数据口径不变。
+         */
+        private val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "ALTER TABLE transactions ADD COLUMN excludeFromStats INTEGER NOT NULL DEFAULT 0",
+                )
+                db.execSQL(
+                    "ALTER TABLE installment_plans ADD COLUMN excludeStatsPeriods TEXT NOT NULL DEFAULT ''",
+                )
+                db.execSQL(
+                    "ALTER TABLE recurring_plans ADD COLUMN excludeStatsPeriods TEXT NOT NULL DEFAULT ''",
+                )
+            }
+        }
+
         @Volatile
         private var instance: AccBookDatabase? = null
 
@@ -383,7 +403,7 @@ abstract class AccBookDatabase : RoomDatabase() {
                         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6,
                         MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9, MIGRATION_9_10,
                         MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15,
-                        MIGRATION_15_16,
+                        MIGRATION_15_16, MIGRATION_16_17,
                     )
                     .build().also { instance = it }
             }

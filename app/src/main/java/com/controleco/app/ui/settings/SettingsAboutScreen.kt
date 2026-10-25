@@ -61,6 +61,11 @@ import com.controleco.app.update.AppUpdate
 private const val GITHUB_REPO_PATH = "ArrogHie/ControlECO"
 private const val GITHUB_REPO_URL = "https://github.com/$GITHUB_REPO_PATH"
 
+/** 本版本（合并版）所在的分支仓库 */
+private const val BRANCH_REPO_PATH = "kindgxs/ControlECO"
+private const val BRANCH_REPO_BRANCH = "Test"
+private const val BRANCH_REPO_URL = "https://github.com/$BRANCH_REPO_PATH/tree/$BRANCH_REPO_BRANCH"
+
 // 深色 hero 上的前景色：由主题推导（hero 渐变永远偏深，色相跟主题走）
 private val HERO_INK: Color
     @Composable get() = MaterialTheme.eco.onHero
@@ -103,6 +108,18 @@ fun SettingsAboutScreen(onBack: () -> Unit) {
         Unit
     }
 
+    val openBranchRepo: () -> Unit = {
+        runCatching {
+            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(BRANCH_REPO_URL)))
+        }.onFailure {
+            EcoToast.show(
+                "没有可用的浏览器，分支地址：$BRANCH_REPO_PATH / $BRANCH_REPO_BRANCH",
+                EcoPillTone.Warn,
+            )
+        }
+        Unit
+    }
+
     SettingsPage(micro = "ABOUT", title = "关于易控钱包", onBack = onBack) {
         AboutHero()
 
@@ -129,6 +146,15 @@ fun SettingsAboutScreen(onBack: () -> Unit) {
             SettingsValueRow("构建类型", if (BuildConfig.DEBUG) "debug / 含调试开关" else "release")
             SettingsDivider()
             SettingsValueRow("开源仓库", "ArrogHie / ControlECO")
+            SettingsDivider()
+            SettingsRow(
+                title = "本版本分支仓库",
+                subtitle = "$BRANCH_REPO_PATH · $BRANCH_REPO_BRANCH",
+                icon = EcoIcons.External,
+                iconTint = MaterialTheme.eco.blue,
+                showChevron = true,
+                onClick = openBranchRepo,
+            )
             SettingsDivider()
             SettingsRow(
                 title = "检查更新",

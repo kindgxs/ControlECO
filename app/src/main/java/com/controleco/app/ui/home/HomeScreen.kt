@@ -1410,6 +1410,8 @@ private fun buildHomeTrend(rows: List<TransactionRow>, period: MonthPeriod, depo
     val zone = ZoneId.systemDefault()
     val byDay = Array(period.days) { 0L }
     rows.forEach { row ->
+        // 不计入收支统计的记录不参与趋势
+        if (row.excludeFromStats) return@forEach
         val date = Instant.ofEpochMilli(row.timestamp).atZone(zone).toLocalDate()
         val index = (period.dayIndexOf(date) - 1).coerceIn(0, period.days - 1)
         val signed = when {

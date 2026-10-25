@@ -617,6 +617,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         counterparty: String = "",
         /** 不计入资产统计：只影响账户余额/资产，仍照常计入账单与收支统计 */
         excludeFromAssets: Boolean = false,
+        /** 不计入账单和收支统计：账单列表仍显示一条记录，但汇总/占比/日历等统计跳过 */
+        excludeFromStats: Boolean = false,
     ) {
         viewModelScope.launch(Dispatchers.IO) {
             if (id > 0) {
@@ -626,6 +628,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                             type = type, amountCents = amountCents, categoryId = categoryId,
                             accountId = accountId, timestamp = timestamp, note = note,
                             counterparty = counterparty, excludeFromAssets = excludeFromAssets,
+                            excludeFromStats = excludeFromStats,
                         )
                     )
                     // 编辑的是捕获来的交易 → 学习这次归类（"越用越准"；手动记账不学习）
@@ -639,6 +642,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         type = type, amountCents = amountCents, categoryId = categoryId,
                         accountId = accountId, timestamp = timestamp, note = note,
                         counterparty = counterparty, excludeFromAssets = excludeFromAssets,
+                        excludeFromStats = excludeFromStats,
                     )
                 )
             }
@@ -1586,6 +1590,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         counterparty: String = item.counterparty,
         /** 不计入资产统计：默认 false（自动入账口径计入资产） */
         excludeFromAssets: Boolean = false,
+        /** 不计入账单和收支统计：默认 false（自动入账口径计入统计） */
+        excludeFromStats: Boolean = false,
     ) {
         // 金额待补条（0 元）不能直接入账：先在列表里补金额
         if (item.amountCents <= 0) {
@@ -1596,6 +1602,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
             PendingActions.confirm(
                 db, txDao, pendingDao, merchantRuleDao, item,
                 categoryId, accountId, counterparty, item.amountCents, excludeFromAssets,
+                excludeFromStats,
             )
         }
     }
@@ -1825,7 +1832,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 当月实际新增存款 = 当月收入 − 当月（未退款）支出 */
     val currentMonthSaving: StateFlow<DepositMath.MonthSaving?> = combine(periodRows, currentPeriod) { rows, period ->
-        rows?.let { DepositMath.rangeSaving(it, period.start, period.endExclusive, zone) }
+        rows?.filter { !it.excludeFromStats }
+            ?.let { DepositMath.rangeSaving(it, period.start, period.endExclusive, zone) }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** 含当月的连续存款趋势（缺数据的月补 0），区间随「存款计划开始月 / 全部」设置变化 */
@@ -1836,8 +1844,10 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         currentPeriod,
     ) { rows, startMonth, period ->
         rows?.let {
+            // 不计入收支统计的记录不参与存款趋势
+            val statsRows = it.filter { row -> !row.excludeFromStats }
             DepositMath.trendBetween(
-                DepositMath.monthlySavings(it, zone),
+                DepositMath.monthlySavings(statsRows, zone),
                 startMonth,
                 YearMonth.from(period.start),
             )
@@ -1886,6 +1896,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         firstDateMillis: Long,
         deductAsset: Boolean,
         excludeAssetPeriods: String = "",
+        excludeStatsPeriods: String = "",
         postTimeMinutes: Int = 540,
         note: String = "",
         onResult: (String?) -> Unit,
@@ -1911,6 +1922,10 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     deductAsset = deductAsset,
                     excludeAssetPeriods = InstallmentMath.encodeExcludedPeriods(
                         InstallmentMath.parseExcludedPeriods(excludeAssetPeriods, periods),
+                        periods,
+                    ),
+                    excludeStatsPeriods = InstallmentMath.encodeExcludedPeriods(
+                        InstallmentMath.parseExcludedPeriods(excludeStatsPeriods, periods),
                         periods,
                     ),
                     postTimeMinutes = postTimeMinutes.coerceIn(0, 24 * 60 - 1),
@@ -1946,6 +1961,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         endDateMillis: Long = 0L,
         excludeAssetPeriods: String = "",
         autoPost: Boolean = false,
+        excludeStatsPeriods: String = "",
         note: String = "",
         onResult: (String?) -> Unit,
     ) {
@@ -2008,6 +2024,12 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     excludeAssetPeriods = InstallmentMath.encodeExcludedPeriods(
                         InstallmentMath.parseExcludedPeriods(
                             excludeAssetPeriods, InstallmentMath.MAX_PERIOD_INDEX,
+                        ),
+                        InstallmentMath.MAX_PERIOD_INDEX,
+                    ),
+                    excludeStatsPeriods = InstallmentMath.encodeExcludedPeriods(
+                        InstallmentMath.parseExcludedPeriods(
+                            excludeStatsPeriods, InstallmentMath.MAX_PERIOD_INDEX,
                         ),
                         InstallmentMath.MAX_PERIOD_INDEX,
                     ),
@@ -2109,6 +2131,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                             excludeFromAssets = InstallmentMath.excludesAsset(
                                 plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
                             ),
+                            excludeFromStats = InstallmentMath.excludesStats(
+                                plan.excludeStatsPeriods, plan.periods, index,
+                            ),
                         ),
                     )
                 }
@@ -2158,6 +2183,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                             externalId = key,
                             excludeFromAssets = InstallmentMath.excludesAssetAt(
                                 plan.deductAsset, plan.excludeAssetPeriods, index,
+                            ),
+                            excludeFromStats = InstallmentMath.excludesStatsAt(
+                                plan.excludeStatsPeriods, index,
                             ),
                         ),
                     )

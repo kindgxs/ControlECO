@@ -27,6 +27,8 @@ data class TransactionRow(
     val refundPending: Boolean = false,
     /** 入库时间：待确认列表把捕获条目与退款条目按这个排（而不是业务时间） */
     val createdAt: Long = 0,
+    /** 是否不计入账单和收支统计（true = 只在账单列表显示，汇总/占比/日历跳过） */
+    val excludeFromStats: Boolean = false,
 )
 
 data class TypeTotalRow(
@@ -60,7 +62,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
-           t.createdAt AS createdAt
+           t.createdAt AS createdAt, t.excludeFromStats AS excludeFromStats
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
@@ -76,6 +78,7 @@ interface TransactionDao {
     @Query(
         """SELECT type AS type, SUM(amountCents) AS totalCents FROM transactions
            WHERE timestamp >= :startMillis AND timestamp < :endMillis
+             AND excludeFromStats = 0
            GROUP BY type"""
     )
     fun observeTypeTotals(startMillis: Long, endMillis: Long): Flow<List<TypeTotalRow>>
@@ -90,7 +93,8 @@ interface TransactionDao {
     @Query(
         """SELECT COALESCE(SUM(amountCents), 0) FROM transactions
            WHERE timestamp >= :startMillis AND timestamp < :endMillis
-             AND type = 'EXPENSE' AND refundMark != 'REFUNDED_EXPENSE'"""
+             AND type = 'EXPENSE' AND refundMark != 'REFUNDED_EXPENSE'
+             AND excludeFromStats = 0"""
     )
     fun observeSpendingTotal(startMillis: Long, endMillis: Long): Flow<Long>
 
@@ -103,6 +107,7 @@ interface TransactionDao {
            FROM transactions t JOIN categories c ON t.categoryId = c.id
            WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
              AND t.type = 'EXPENSE' AND t.refundMark != 'REFUNDED_EXPENSE'
+             AND t.excludeFromStats = 0
            GROUP BY c.id, c.name
            ORDER BY totalCents DESC"""
     )
@@ -157,7 +162,7 @@ interface TransactionDao {
         """UPDATE transactions
            SET amountCents = :amountCents, categoryId = :categoryId,
                accountId = :accountId, counterparty = :counterparty,
-               excludeFromAssets = :excludeFromAssets
+               excludeFromAssets = :excludeFromAssets, excludeFromStats = :excludeFromStats
            WHERE id = :id"""
     )
     suspend fun updateEnteredFields(
@@ -167,6 +172,7 @@ interface TransactionDao {
         accountId: Long,
         counterparty: String,
         excludeFromAssets: Boolean,
+        excludeFromStats: Boolean,
     )
 
     /** 登记退款的候选：近 60 天还没标「已退款」的支出（供"无金额退款通知→选被退款的账单"使用） */
@@ -176,7 +182,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
-           t.createdAt AS createdAt
+           t.createdAt AS createdAt, t.excludeFromStats AS excludeFromStats
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
@@ -197,7 +203,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
-           t.createdAt AS createdAt
+           t.createdAt AS createdAt, t.excludeFromStats AS excludeFromStats
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
@@ -220,7 +226,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
-           t.createdAt AS createdAt
+           t.createdAt AS createdAt, t.excludeFromStats AS excludeFromStats
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
