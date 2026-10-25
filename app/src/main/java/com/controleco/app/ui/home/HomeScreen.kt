@@ -161,6 +161,7 @@ internal data class CategoryRingData(
 fun HomeScreen(
     vm: LedgerViewModel,
     onOpenCategories: () -> Unit,
+    onOpenAccounts: () -> Unit,
 ) {
     val budgetCents by vm.monthlyBudgetCents.collectAsStateWithLifecycle()
     val spentCents by vm.homeSpent.collectAsStateWithLifecycle()
@@ -385,6 +386,16 @@ fun HomeScreen(
                         .padding(top = 10.dp, end = 0.dp),
                 ) {
                     ManageButton(onClick = onOpenCategories)
+                }
+            }
+            // 资产页右上角：进入账户管理
+            if (mode == 2) {
+                Box(
+                    Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(top = 10.dp, end = 0.dp),
+                ) {
+                    AccountEntry(onClick = onOpenAccounts)
                 }
             }
         }
@@ -869,6 +880,31 @@ private fun ManageButton(onClick: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Icon(EcoIcons.Edit, contentDescription = "分类预算", tint = c.ink2, modifier = Modifier.size(15.dp))
+    }
+}
+
+/** 资产页右上角的「账户」入口：胶囊 + 钱包图标，点进账户管理 */
+@Composable
+private fun AccountEntry(onClick: () -> Unit) {
+    val c = MaterialTheme.eco
+    val shape = RoundedCornerShape(18.dp)
+    Row(
+        Modifier
+            .height(35.dp)
+            .clip(shape)
+            .background(c.surface)
+            .border(1.dp, c.rule, shape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(EcoIcons.Wallet, contentDescription = null, tint = c.ink2, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(5.dp))
+        Text("账户", style = EcoType.Pill.copy(fontSize = 10.sp), color = c.ink2)
     }
 }
 

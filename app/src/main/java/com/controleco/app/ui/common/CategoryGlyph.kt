@@ -23,6 +23,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.controleco.app.ui.theme.accBook
 import com.controleco.app.ui.theme.categoryColor
+import kotlin.math.cos
+import kotlin.math.sin
 
 /**
  * 分类标记：账单列表行首的小 logo，也是自定义图标的"内置图形"库。
@@ -64,6 +66,32 @@ enum class Glyph(val label: String) {
     DIAMOND("菱形"),
     BARS("柱状图"),
     GRID("方块组"),
+    // 扩充图形库（分类图标选择器可选用；不参与默认哈希取形，避免改变已有分类的外观）
+    COFFEE("咖啡杯"),
+    PET("宠物爪"),
+    SPORT("运动"),
+    FLOWER("鲜花"),
+    GIFT("礼物"),
+    MUSIC("音乐"),
+    CAMERA("相机"),
+    PLANE("飞机"),
+    BUS("公交"),
+    BIKE("单车"),
+    DROP("水滴"),
+    BOLT("闪电"),
+    GRAD_CAP("学业"),
+    LAPTOP("电脑"),
+    LIPSTICK("美妆"),
+    APPLE("水果"),
+    ICE_CREAM("冰淇淋"),
+    WINE("酒水"),
+    SHIELD("保险"),
+    RECEIPT("票据"),
+    WRENCH("维修"),
+    BABY("母婴"),
+    HEART("心意"),
+    CROWN("会员"),
+    BED("酒店"),
     ;
 
     /** SVG 图形对应的路径数据；自绘图形为 null */
@@ -98,13 +126,20 @@ private val KEYWORDS: List<Pair<List<String>, Glyph>> = listOf(
     listOf("其他", "其它", "杂") to Glyph.DOTS,
 )
 
+/** 按分类名哈希取形的候选集合：固定为 v5 的 24 个图形，新增图形只进选择器、不改变已有分类外观 */
+private val HASH_SHAPES: List<Glyph> = listOf(
+    Glyph.SVG_BAG, Glyph.SVG_MEAL, Glyph.SVG_CAR, Glyph.SVG_SALARY, Glyph.SVG_GAME, Glyph.SVG_DAILY,
+    Glyph.BURGER, Glyph.BOWL, Glyph.CAR, Glyph.BAG, Glyph.HOUSE, Glyph.CROSS, Glyph.STAR, Glyph.BOOK,
+    Glyph.SIGNAL, Glyph.ARROW_UP, Glyph.WAVE, Glyph.CANDLES, Glyph.YEN, Glyph.RING, Glyph.TRIANGLE,
+    Glyph.DIAMOND, Glyph.BARS, Glyph.GRID,
+)
+
 /** 分类名 → 形状：先关键词，再按名字哈希稳定取形 */
 fun glyphForName(categoryName: String): Glyph {
     KEYWORDS.firstOrNull { (words, _) -> words.any { categoryName.contains(it) } }?.let { return it.second }
-    val shapes = Glyph.entries.filter { it != Glyph.DOTS && it != Glyph.RED_PACKET }
     var h = 7
     for (ch in categoryName) h = (h * 31 + ch.code) and 0x7FFFFFFF
-    return shapes[h % shapes.size]
+    return HASH_SHAPES[h % HASH_SHAPES.size]
 }
 
 /** 图标规格里的图形名 → 图形（未知名字返回 null，调用方回落到按名字取形） */
@@ -421,6 +456,437 @@ private fun DrawScope.drawGlyph(glyph: Glyph, color: Color) {
                     cornerRadius = CornerRadius(s * 0.10f),
                 )
             }
+        }
+        // ---------- 扩充图形库 ----------
+        Glyph.COFFEE -> {
+            // 咖啡杯：先把把手圆环画出来，再用实心杯身盖住左半边
+            drawCircle(
+                color = color,
+                radius = s * 0.13f,
+                center = Offset(s * 0.76f, s * 0.60f),
+                style = Stroke(width = s * 0.075f),
+            )
+            val cup = Path().apply {
+                moveTo(s * 0.14f, s * 0.42f)
+                lineTo(s * 0.72f, s * 0.42f)
+                lineTo(s * 0.64f, s * 0.84f)
+                lineTo(s * 0.22f, s * 0.84f)
+                close()
+            }
+            drawPath(cup, color)
+            drawLine(color, Offset(s * 0.30f, s * 0.30f), Offset(s * 0.30f, s * 0.16f), s * 0.065f, StrokeCap.Round)
+            drawLine(color, Offset(s * 0.48f, s * 0.30f), Offset(s * 0.48f, s * 0.16f), s * 0.065f, StrokeCap.Round)
+        }
+        Glyph.PET -> {
+            // 宠物爪：四个脚趾 + 掌垫
+            drawCircle(color, radius = s * 0.09f, center = Offset(s * 0.24f, s * 0.32f))
+            drawCircle(color, radius = s * 0.09f, center = Offset(s * 0.42f, s * 0.20f))
+            drawCircle(color, radius = s * 0.09f, center = Offset(s * 0.60f, s * 0.20f))
+            drawCircle(color, radius = s * 0.09f, center = Offset(s * 0.78f, s * 0.32f))
+            drawOval(color, topLeft = Offset(s * 0.28f, s * 0.50f), size = Size(s * 0.44f, s * 0.36f))
+        }
+        Glyph.SPORT -> {
+            // 运动：哑铃
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.28f, s * 0.42f),
+                size = Size(s * 0.44f, s * 0.16f),
+                cornerRadius = CornerRadius(s * 0.06f),
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.08f, s * 0.26f),
+                size = Size(s * 0.20f, s * 0.48f),
+                cornerRadius = CornerRadius(s * 0.08f),
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.72f, s * 0.26f),
+                size = Size(s * 0.20f, s * 0.48f),
+                cornerRadius = CornerRadius(s * 0.08f),
+            )
+        }
+        Glyph.FLOWER -> {
+            // 鲜花：五片花瓣环绕花心
+            val cx = s * 0.50f
+            val cy = s * 0.48f
+            listOf(90f, 162f, 234f, 306f, 18f).forEach { deg ->
+                val rad = Math.toRadians(deg.toDouble())
+                drawCircle(
+                    color = color,
+                    radius = s * 0.15f,
+                    center = Offset(
+                        cx + (s * 0.22f * cos(rad)).toFloat(),
+                        cy - (s * 0.22f * sin(rad)).toFloat(),
+                    ),
+                )
+            }
+            drawCircle(color = color, radius = s * 0.13f, center = Offset(cx, cy))
+        }
+        Glyph.GIFT -> {
+            // 礼物：盒身 + 外凸的盒盖 + 蝴蝶结
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.16f, s * 0.44f),
+                size = Size(s * 0.68f, s * 0.50f),
+                cornerRadius = CornerRadius(s * 0.08f),
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.08f, s * 0.30f),
+                size = Size(s * 0.84f, s * 0.16f),
+                cornerRadius = CornerRadius(s * 0.06f),
+            )
+            drawCircle(color = color, radius = s * 0.10f, center = Offset(s * 0.38f, s * 0.24f))
+            drawCircle(color = color, radius = s * 0.10f, center = Offset(s * 0.62f, s * 0.24f))
+            drawCircle(color = color, radius = s * 0.05f, center = Offset(s * 0.50f, s * 0.29f))
+        }
+        Glyph.MUSIC -> {
+            // 音乐：两个音符 + 顶部横梁
+            drawLine(color, Offset(s * 0.34f, s * 0.74f), Offset(s * 0.34f, s * 0.22f), s * 0.075f, StrokeCap.Round)
+            drawLine(color, Offset(s * 0.70f, s * 0.68f), Offset(s * 0.70f, s * 0.16f), s * 0.075f, StrokeCap.Round)
+            val beam = Path().apply {
+                moveTo(s * 0.34f, s * 0.22f)
+                lineTo(s * 0.70f, s * 0.16f)
+                lineTo(s * 0.70f, s * 0.34f)
+                lineTo(s * 0.34f, s * 0.40f)
+                close()
+            }
+            drawPath(beam, color)
+            drawCircle(color = color, radius = s * 0.12f, center = Offset(s * 0.22f, s * 0.76f))
+            drawCircle(color = color, radius = s * 0.12f, center = Offset(s * 0.58f, s * 0.70f))
+        }
+        Glyph.CAMERA -> {
+            // 相机：机身轮廓 + 取景器凸起 + 镜头圈 + 闪光点
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.06f, s * 0.26f),
+                size = Size(s * 0.88f, s * 0.60f),
+                cornerRadius = CornerRadius(s * 0.12f),
+                style = stroke,
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.34f, s * 0.14f),
+                size = Size(s * 0.24f, s * 0.16f),
+                cornerRadius = CornerRadius(s * 0.05f),
+            )
+            drawCircle(
+                color = color,
+                radius = s * 0.17f,
+                center = Offset(s * 0.50f, s * 0.58f),
+                style = Stroke(width = s * 0.10f),
+            )
+            drawCircle(color = color, radius = s * 0.05f, center = Offset(s * 0.80f, s * 0.38f))
+        }
+        Glyph.PLANE -> {
+            // 飞机：纸飞机（右箭头形）
+            val p = Path().apply {
+                moveTo(s * 0.08f, s * 0.92f)
+                lineTo(s * 0.94f, s * 0.50f)
+                lineTo(s * 0.08f, s * 0.08f)
+                lineTo(s * 0.08f, s * 0.40f)
+                lineTo(s * 0.56f, s * 0.50f)
+                lineTo(s * 0.08f, s * 0.60f)
+                close()
+            }
+            drawPath(p, color)
+        }
+        Glyph.BUS -> {
+            // 公交：车身轮廓 + 前窗 + 车轮
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.12f, s * 0.06f),
+                size = Size(s * 0.76f, s * 0.72f),
+                cornerRadius = CornerRadius(s * 0.14f),
+                style = stroke,
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.22f, s * 0.18f),
+                size = Size(s * 0.56f, s * 0.24f),
+                cornerRadius = CornerRadius(s * 0.05f),
+            )
+            drawCircle(color = color, radius = s * 0.10f, center = Offset(s * 0.30f, s * 0.86f))
+            drawCircle(color = color, radius = s * 0.10f, center = Offset(s * 0.70f, s * 0.86f))
+        }
+        Glyph.BIKE -> {
+            // 单车：两个车轮 + 车架 + 车把
+            val wheel = Stroke(width = s * 0.09f)
+            drawCircle(color = color, radius = s * 0.20f, center = Offset(s * 0.22f, s * 0.72f), style = wheel)
+            drawCircle(color = color, radius = s * 0.20f, center = Offset(s * 0.78f, s * 0.72f), style = wheel)
+            val frame = Path().apply {
+                moveTo(s * 0.22f, s * 0.72f)
+                lineTo(s * 0.46f, s * 0.40f)
+                lineTo(s * 0.78f, s * 0.72f)
+                moveTo(s * 0.46f, s * 0.40f)
+                lineTo(s * 0.64f, s * 0.40f)
+                moveTo(s * 0.78f, s * 0.72f)
+                lineTo(s * 0.66f, s * 0.30f)
+                moveTo(s * 0.56f, s * 0.30f)
+                lineTo(s * 0.76f, s * 0.30f)
+            }
+            drawPath(frame, color, style = Stroke(width = s * 0.08f, cap = StrokeCap.Round))
+        }
+        Glyph.DROP -> {
+            // 水滴
+            val p = Path().apply {
+                moveTo(s * 0.50f, s * 0.06f)
+                cubicTo(s * 0.76f, s * 0.34f, s * 0.88f, s * 0.52f, s * 0.88f, s * 0.66f)
+                cubicTo(s * 0.88f, s * 0.86f, s * 0.72f, s * 0.96f, s * 0.50f, s * 0.96f)
+                cubicTo(s * 0.28f, s * 0.96f, s * 0.12f, s * 0.86f, s * 0.12f, s * 0.66f)
+                cubicTo(s * 0.12f, s * 0.52f, s * 0.24f, s * 0.34f, s * 0.50f, s * 0.06f)
+                close()
+            }
+            drawPath(p, color)
+        }
+        Glyph.BOLT -> {
+            // 闪电
+            val p = Path().apply {
+                moveTo(s * 0.62f, s * 0.04f)
+                lineTo(s * 0.10f, s * 0.56f)
+                lineTo(s * 0.44f, s * 0.56f)
+                lineTo(s * 0.34f, s * 0.96f)
+                lineTo(s * 0.90f, s * 0.42f)
+                lineTo(s * 0.54f, s * 0.42f)
+                close()
+            }
+            drawPath(p, color)
+        }
+        Glyph.GRAD_CAP -> {
+            // 学业：学士帽（方形帽顶 + 帽檐 + 流苏）
+            val top = Path().apply {
+                moveTo(s * 0.50f, s * 0.10f)
+                lineTo(s * 0.94f, s * 0.32f)
+                lineTo(s * 0.50f, s * 0.54f)
+                lineTo(s * 0.06f, s * 0.32f)
+                close()
+            }
+            drawPath(top, color)
+            val base = Path().apply {
+                moveTo(s * 0.26f, s * 0.44f)
+                lineTo(s * 0.74f, s * 0.44f)
+                lineTo(s * 0.74f, s * 0.68f)
+                lineTo(s * 0.50f, s * 0.82f)
+                lineTo(s * 0.26f, s * 0.68f)
+                close()
+            }
+            drawPath(base, color)
+            drawLine(color, Offset(s * 0.90f, s * 0.34f), Offset(s * 0.90f, s * 0.62f), s * 0.05f, StrokeCap.Round)
+            drawCircle(color = color, radius = s * 0.055f, center = Offset(s * 0.90f, s * 0.68f))
+        }
+        Glyph.LAPTOP -> {
+            // 电脑：屏幕轮廓 + 键盘底座
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.16f, s * 0.10f),
+                size = Size(s * 0.68f, s * 0.50f),
+                cornerRadius = CornerRadius(s * 0.08f),
+                style = stroke,
+            )
+            val base = Path().apply {
+                moveTo(s * 0.04f, s * 0.72f)
+                lineTo(s * 0.96f, s * 0.72f)
+                lineTo(s * 0.86f, s * 0.88f)
+                lineTo(s * 0.14f, s * 0.88f)
+                close()
+            }
+            drawPath(base, color)
+        }
+        Glyph.LIPSTICK -> {
+            // 美妆：口红（斜切膏体 + 管身）
+            val bullet = Path().apply {
+                moveTo(s * 0.36f, s * 0.52f)
+                lineTo(s * 0.36f, s * 0.24f)
+                lineTo(s * 0.64f, s * 0.12f)
+                lineTo(s * 0.64f, s * 0.52f)
+                close()
+            }
+            drawPath(bullet, color)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.34f, s * 0.52f),
+                size = Size(s * 0.32f, s * 0.42f),
+                cornerRadius = CornerRadius(s * 0.06f),
+            )
+        }
+        Glyph.APPLE -> {
+            // 水果：苹果 + 果柄 + 叶片
+            val body = Path().apply {
+                moveTo(s * 0.50f, s * 0.32f)
+                cubicTo(s * 0.34f, s * 0.16f, s * 0.10f, s * 0.26f, s * 0.10f, s * 0.52f)
+                cubicTo(s * 0.10f, s * 0.78f, s * 0.32f, s * 0.94f, s * 0.50f, s * 0.94f)
+                cubicTo(s * 0.68f, s * 0.94f, s * 0.90f, s * 0.78f, s * 0.90f, s * 0.52f)
+                cubicTo(s * 0.90f, s * 0.26f, s * 0.66f, s * 0.16f, s * 0.50f, s * 0.32f)
+                close()
+            }
+            drawPath(body, color)
+            drawLine(color, Offset(s * 0.50f, s * 0.30f), Offset(s * 0.54f, s * 0.10f), s * 0.06f, StrokeCap.Round)
+            val leaf = Path().apply {
+                moveTo(s * 0.56f, s * 0.18f)
+                cubicTo(s * 0.68f, s * 0.04f, s * 0.84f, s * 0.06f, s * 0.86f, s * 0.10f)
+                cubicTo(s * 0.84f, s * 0.22f, s * 0.70f, s * 0.28f, s * 0.56f, s * 0.18f)
+                close()
+            }
+            drawPath(leaf, color)
+        }
+        Glyph.ICE_CREAM -> {
+            // 冰淇淋：圆球 + 三角蛋筒
+            drawCircle(color = color, radius = s * 0.24f, center = Offset(s * 0.50f, s * 0.30f))
+            val cone = Path().apply {
+                moveTo(s * 0.26f, s * 0.50f)
+                lineTo(s * 0.74f, s * 0.50f)
+                lineTo(s * 0.50f, s * 0.94f)
+                close()
+            }
+            drawPath(cone, color)
+        }
+        Glyph.WINE -> {
+            // 酒水：高脚杯
+            val bowl = Path().apply {
+                moveTo(s * 0.26f, s * 0.10f)
+                lineTo(s * 0.74f, s * 0.10f)
+                cubicTo(s * 0.74f, s * 0.36f, s * 0.66f, s * 0.54f, s * 0.50f, s * 0.54f)
+                cubicTo(s * 0.34f, s * 0.54f, s * 0.26f, s * 0.36f, s * 0.26f, s * 0.10f)
+                close()
+            }
+            drawPath(bowl, color)
+            drawLine(color, Offset(s * 0.50f, s * 0.52f), Offset(s * 0.50f, s * 0.84f), s * 0.07f, StrokeCap.Round)
+            drawLine(color, Offset(s * 0.32f, s * 0.88f), Offset(s * 0.68f, s * 0.88f), s * 0.09f, StrokeCap.Round)
+        }
+        Glyph.SHIELD -> {
+            // 保险：盾牌轮廓 + 对勾
+            val shield = Path().apply {
+                moveTo(s * 0.50f, s * 0.06f)
+                lineTo(s * 0.88f, s * 0.20f)
+                lineTo(s * 0.88f, s * 0.50f)
+                cubicTo(s * 0.88f, s * 0.72f, s * 0.72f, s * 0.88f, s * 0.50f, s * 0.94f)
+                cubicTo(s * 0.28f, s * 0.88f, s * 0.12f, s * 0.72f, s * 0.12f, s * 0.50f)
+                lineTo(s * 0.12f, s * 0.20f)
+                close()
+            }
+            drawPath(shield, color, style = Stroke(width = s * 0.09f))
+            val check = Path().apply {
+                moveTo(s * 0.34f, s * 0.50f)
+                lineTo(s * 0.46f, s * 0.62f)
+                lineTo(s * 0.68f, s * 0.38f)
+            }
+            drawPath(check, color, style = Stroke(width = s * 0.10f, cap = StrokeCap.Round))
+        }
+        Glyph.RECEIPT -> {
+            // 票据：带锯齿底边的小票
+            val p = Path().apply {
+                moveTo(s * 0.24f, s * 0.06f)
+                lineTo(s * 0.76f, s * 0.06f)
+                lineTo(s * 0.76f, s * 0.82f)
+                lineTo(s * 0.63f, s * 0.92f)
+                lineTo(s * 0.50f, s * 0.82f)
+                lineTo(s * 0.37f, s * 0.92f)
+                lineTo(s * 0.24f, s * 0.82f)
+                close()
+            }
+            drawPath(p, color)
+        }
+        Glyph.WRENCH -> {
+            // 维修：扳手（斜放）+ 开口卡口
+            rotate(-45f, pivot = Offset(s / 2f, s / 2f)) {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(s * 0.44f, s * 0.34f),
+                    size = Size(s * 0.12f, s * 0.58f),
+                    cornerRadius = CornerRadius(s * 0.06f),
+                )
+                drawArc(
+                    color = color,
+                    startAngle = 120f,
+                    sweepAngle = 300f,
+                    useCenter = false,
+                    topLeft = Offset(s * 0.30f, s * 0.04f),
+                    size = Size(s * 0.40f, s * 0.40f),
+                    style = Stroke(width = s * 0.12f, cap = StrokeCap.Round),
+                )
+            }
+        }
+        Glyph.BABY -> {
+            // 母婴：奶瓶（奶嘴 + 瓶盖 + 瓶身）
+            drawCircle(color = color, radius = s * 0.10f, center = Offset(s * 0.50f, s * 0.14f))
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.36f, s * 0.20f),
+                size = Size(s * 0.28f, s * 0.14f),
+                cornerRadius = CornerRadius(s * 0.05f),
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.30f, s * 0.32f),
+                size = Size(s * 0.40f, s * 0.62f),
+                cornerRadius = CornerRadius(s * 0.12f),
+            )
+        }
+        Glyph.HEART -> {
+            // 心意：心形
+            val p = Path().apply {
+                moveTo(s * 0.50f, s * 0.92f)
+                cubicTo(s * 0.10f, s * 0.64f, s * 0.02f, s * 0.44f, s * 0.12f, s * 0.26f)
+                cubicTo(s * 0.24f, s * 0.06f, s * 0.46f, s * 0.12f, s * 0.50f, s * 0.30f)
+                cubicTo(s * 0.54f, s * 0.12f, s * 0.76f, s * 0.06f, s * 0.88f, s * 0.26f)
+                cubicTo(s * 0.98f, s * 0.44f, s * 0.90f, s * 0.64f, s * 0.50f, s * 0.92f)
+                close()
+            }
+            drawPath(p, color)
+        }
+        Glyph.CROWN -> {
+            // 会员：皇冠 + 底座
+            val p = Path().apply {
+                moveTo(s * 0.08f, s * 0.74f)
+                lineTo(s * 0.06f, s * 0.24f)
+                lineTo(s * 0.30f, s * 0.46f)
+                lineTo(s * 0.50f, s * 0.12f)
+                lineTo(s * 0.70f, s * 0.46f)
+                lineTo(s * 0.94f, s * 0.24f)
+                lineTo(s * 0.92f, s * 0.74f)
+                close()
+            }
+            drawPath(p, color)
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.12f, s * 0.76f),
+                size = Size(s * 0.76f, s * 0.14f),
+                cornerRadius = CornerRadius(s * 0.06f),
+            )
+        }
+        Glyph.BED -> {
+            // 酒店：床（床头 + 枕头 + 床垫 + 床腿）
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.04f, s * 0.28f),
+                size = Size(s * 0.18f, s * 0.60f),
+                cornerRadius = CornerRadius(s * 0.06f),
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.20f, s * 0.52f),
+                size = Size(s * 0.76f, s * 0.20f),
+                cornerRadius = CornerRadius(s * 0.06f),
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.26f, s * 0.36f),
+                size = Size(s * 0.26f, s * 0.16f),
+                cornerRadius = CornerRadius(s * 0.05f),
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.22f, s * 0.72f),
+                size = Size(s * 0.10f, s * 0.20f),
+                cornerRadius = CornerRadius(s * 0.04f),
+            )
+            drawRoundRect(
+                color = color,
+                topLeft = Offset(s * 0.86f, s * 0.72f),
+                size = Size(s * 0.10f, s * 0.20f),
+                cornerRadius = CornerRadius(s * 0.04f),
+            )
         }
         // 六个 SVG 图形在上面已经提前 return
         else -> Unit

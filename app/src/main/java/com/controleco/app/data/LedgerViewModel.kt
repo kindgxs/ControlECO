@@ -1127,9 +1127,14 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun persistCategoryBudgetAmounts(amounts: Map<Long, Long>) {
         val editor = prefs.edit()
-        // 注意排除比例键："category_budget_pct_" 也以 "category_budget_" 开头，前缀匹配不能顺手删掉它
+        // 注意排除比例键："category_budget_pct_" 也以 "category_budget_" 开头，前缀匹配不能顺手删掉它；
+        // category_budget_mode 是方案开关（字符串），同样不能被当成金额键删除
         prefs.all.keys
-            .filter { it.startsWith(KEY_CAT_BUDGET_PREFIX) && !it.startsWith(KEY_CAT_BUDGET_PCT_PREFIX) }
+            .filter {
+                it.startsWith(KEY_CAT_BUDGET_PREFIX) &&
+                    !it.startsWith(KEY_CAT_BUDGET_PCT_PREFIX) &&
+                    it != KEY_CAT_BUDGET_MODE
+            }
             .forEach(editor::remove)
         amounts.forEach { (id, cents) -> editor.putLong(KEY_CAT_BUDGET_PREFIX + id, cents) }
         editor.apply()
@@ -1757,6 +1762,30 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { YearMonth.parse(raw) }.getOrNull()
         }
 
+    /** 「区间」模式显示几个月：默认 12，可在存款页手动调整（1..60） */
+    private val _depositRangeMonths = MutableStateFlow(loadDepositRangeMonths())
+
+    val depositRangeMonths: StateFlow<Int> = _depositRangeMonths
+
+    fun setDepositRangeMonths(months: Int) {
+        val v = months.coerceIn(MIN_DEPOSIT_RANGE_MONTHS, MAX_DEPOSIT_RANGE_MONTHS)
+        prefs.edit().putInt(KEY_DEPOSIT_RANGE_MONTHS, v).apply()
+        _depositRangeMonths.value = v
+        AppLog.i("settings", "depositRangeMonths=$v")
+    }
+
+    private fun loadDepositRangeMonths(): Int {
+        // 用整型设置安全读取：旧备份可能把它存成字符串
+        val raw = prefs.all[KEY_DEPOSIT_RANGE_MONTHS]
+        val value = when (raw) {
+            is Int -> raw
+            is Long -> raw.toInt()
+            is String -> raw.trim().toIntOrNull()
+            else -> null
+        }
+        return (value ?: DEFAULT_DEPOSIT_RANGE_MONTHS).coerceIn(MIN_DEPOSIT_RANGE_MONTHS, MAX_DEPOSIT_RANGE_MONTHS)
+    }
+
     /** 每月存款的显示范围：false = 从计划开始月（未设置则近 12 个月），true = 全部历史 */
     private val _depositShowAll = MutableStateFlow(prefs.getBoolean(KEY_DEPOSIT_SHOW_ALL, false))
 
@@ -1768,24 +1797,26 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         AppLog.i("settings", "depositShowAll=$all")
     }
 
-    /** 每月存款趋势的起始月：全部 = 最早一笔账单所在月；否则取计划开始月，未设置时近 12 个月 */
+    /** 每月存款趋势的起始月：全部 = 最早一笔账单所在月；区间 = 最近 N 个月（不早于计划开始月） */
     @OptIn(ExperimentalCoroutinesApi::class)
     private val depositStartMonth: Flow<YearMonth> = combine(
         currentPeriod,
         _depositPlanStart,
         _depositShowAll,
+        _depositRangeMonths,
         txDao.observeEarliestTimestamp(),
-    ) { period, planStart, showAll, earliest ->
+    ) { period, planStart, showAll, rangeMonths, earliest ->
         val endMonth = YearMonth.from(period.start)
-        val fallback = endMonth.minusMonths(11)
+        val windowStart = endMonth.minusMonths(rangeMonths.toLong() - 1L)
         val planMonth = planStart?.takeIf { !it.isAfter(endMonth) }
         val earliestMonth = earliest?.let {
             YearMonth.from(java.time.Instant.ofEpochMilli(it).atZone(zone).toLocalDate())
         }?.takeIf { !it.isAfter(endMonth) }
         when {
-            showAll -> earliestMonth ?: planMonth ?: fallback
-            planMonth != null -> planMonth
-            else -> fallback
+            showAll -> earliestMonth ?: planMonth ?: windowStart
+            // 区间 = 最近 N 个月；设了计划开始月时从计划月开始，但不会往前超过 N 个月
+            planMonth != null -> if (planMonth.isBefore(windowStart)) windowStart else planMonth
+            else -> windowStart
         }
     }.distinctUntilChanged()
 
@@ -2234,6 +2265,7 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         _depositGoalCents.value = prefs.getLong(KEY_DEPOSIT_GOAL, 0L)
         _depositMonthGoals.value = loadDepositMonthGoals()
         _depositPlanStart.value = loadDepositPlanStart()
+        _depositRangeMonths.value = loadDepositRangeMonths()
         _depositShowAll.value = prefs.getBoolean(KEY_DEPOSIT_SHOW_ALL, false)
         _homeQuickAddEnabled.value = prefs.getBoolean(KEY_HOME_QUICK_ADD, true)
         _subcategoryRollupMode.value = SubcategoryRollupMode.of(prefs.getString(KEY_SUBCAT_ROLLUP, null))
@@ -2309,7 +2341,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         const val KEY_DEPOSIT_GOAL = "deposit_goal_cents"
         const val KEY_DEPOSIT_MONTH_GOAL_PREFIX = "deposit_goal_month_"
         const val KEY_DEPOSIT_PLAN_START = "deposit_plan_start_month"
+        const val KEY_DEPOSIT_RANGE_MONTHS = "deposit_range_months"
         const val KEY_DEPOSIT_SHOW_ALL = "deposit_show_all_months"
+        const val DEFAULT_DEPOSIT_RANGE_MONTHS = 12
+        const val MIN_DEPOSIT_RANGE_MONTHS = 1
+        const val MAX_DEPOSIT_RANGE_MONTHS = 60
         const val KEY_SUBCAT_ROLLUP = "subcategory_rollup_mode"
         const val KEY_HOME_QUICK_ADD = "home_quick_add_enabled"
         const val KEY_ASSET_CARD_PICK = "asset_card_pick"

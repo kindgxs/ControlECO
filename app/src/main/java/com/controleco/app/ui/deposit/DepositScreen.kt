@@ -31,8 +31,10 @@ import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.deposit.DepositMath
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.eco.EcoAutoMoney
+import com.controleco.app.ui.eco.EcoChip
 import com.controleco.app.ui.eco.EcoEmpty
 import com.controleco.app.ui.eco.EcoGhostButton
+import com.controleco.app.ui.eco.EcoIconButton
 import com.controleco.app.ui.eco.EcoMoneyField
 import com.controleco.app.ui.eco.EcoPageNote
 import com.controleco.app.ui.eco.EcoPane
@@ -43,6 +45,7 @@ import com.controleco.app.ui.eco.EcoProgressBar
 import com.controleco.app.ui.eco.EcoSectionHead
 import com.controleco.app.ui.eco.EcoSegmented
 import com.controleco.app.ui.eco.EcoSheet
+import com.controleco.app.ui.eco.EcoTextAction
 import com.controleco.app.ui.eco.EcoToast
 import com.controleco.app.ui.eco.EcoTopBar
 import com.controleco.app.ui.eco.ecoBottomContentPadding
@@ -66,7 +69,10 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
     val goal by vm.depositGoalCents.collectAsStateWithLifecycle()
     val monthGoals by vm.depositMonthGoals.collectAsStateWithLifecycle()
     val planStart by vm.depositPlanStartMonth.collectAsStateWithLifecycle()
+    val rangeMonths by vm.depositRangeMonths.collectAsStateWithLifecycle()
     val showAll by vm.depositShowAll.collectAsStateWithLifecycle()
+    var showRangeSheet by remember { mutableStateOf(false) }
+    var rangeDraft by remember { mutableStateOf(12) }
     var goalText by remember(goal) {
         mutableStateOf(if (goal > 0L) Money.formatCents(goal) else "")
     }
@@ -143,17 +149,35 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
             }
 
             item(key = "range") {
-                EcoPageNote(
-                    when {
-                        showAll -> "当前显示全部月份：从最早一笔账单所在月到本月"
-                        planStart != null -> {
-                            val start = planStart!!
-                            "当前显示 ${start.year} 年 ${start.monthValue} 月起至本月" +
-                                "（存款计划开始时间可在设置里修改）"
-                        }
-                        else -> "未设置存款计划开始时间，默认显示近 12 个月（可在设置里设置开始月份）"
-                    },
-                )
+                // 区间模式：月份数可手动调整（默认 12）；「全部」模式从最早一笔账单开始
+                val startMonth = trend.firstOrNull()?.month
+                val note = when {
+                    showAll -> "当前显示全部月份：从最早一笔账单所在月到本月"
+                    startMonth != null -> "当前显示最近 $rangeMonths 个月：${startMonth.year} 年 " +
+                        "${startMonth.monthValue} 月起至本月"
+                    else -> "当前显示最近 $rangeMonths 个月"
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        EcoPageNote(
+                            if (!showAll && planStart != null) {
+                                "$note（存款计划开始时间可在设置里修改）"
+                            } else {
+                                note
+                            },
+                        )
+                    }
+                    if (!showAll) {
+                        EcoTextAction(
+                            text = "调整月份数",
+                            onClick = {
+                                rangeDraft = rangeMonths
+                                showRangeSheet = true
+                            },
+                            modifier = Modifier.padding(start = 8.dp),
+                        )
+                    }
+                }
             }
 
             if (trend.none { it.incomeCents != 0L || it.expenseCents != 0L }) {
@@ -247,6 +271,72 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
+                Spacer(Modifier.height(14.dp))
+            }
+        }
+    }
+
+    // 区间模式：手动设置显示月数
+    if (showRangeSheet) {
+        val c = MaterialTheme.eco
+        EcoSheet(
+            onDismiss = { showRangeSheet = false },
+            title = "存款显示月份区间",
+            subtitle = "只影响「每月存款」列表显示多少个月，不影响统计与备份",
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "显示月数",
+                        style = EcoType.RowTitle.copy(fontSize = 12.sp),
+                        color = c.ink,
+                        modifier = Modifier.weight(1f),
+                    )
+                    EcoIconButton(
+                        icon = EcoIcons.Back,
+                        contentDescription = "减少一个月",
+                        onClick = { if (rangeDraft > 1) rangeDraft-- },
+                        size = 30.dp,
+                        enabled = rangeDraft > 1,
+                    )
+                    Text(
+                        "$rangeDraft 个月",
+                        style = EcoType.RowTitle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold),
+                        color = c.ink,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.width(90.dp),
+                    )
+                    EcoIconButton(
+                        icon = EcoIcons.Next,
+                        contentDescription = "增加一个月",
+                        onClick = { if (rangeDraft < 60) rangeDraft++ },
+                        size = 30.dp,
+                        enabled = rangeDraft < 60,
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(3, 6, 12, 24, 36).forEach { n ->
+                        EcoChip(
+                            text = "$n",
+                            selected = rangeDraft == n,
+                            onClick = { rangeDraft = n },
+                            height = 28.dp,
+                        )
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                EcoPrimaryButton(
+                    text = "保存显示区间",
+                    onClick = {
+                        vm.setDepositRangeMonths(rangeDraft)
+                        showRangeSheet = false
+                        EcoToast.show("已保存：每月存款显示最近 $rangeDraft 个月")
+                    },
+                )
                 Spacer(Modifier.height(14.dp))
             }
         }

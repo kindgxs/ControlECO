@@ -196,12 +196,14 @@ object BackupCsv {
         out.marker("##budgets|预算信息")
         out.row("键", "说明", "值")
 
-        out.row(KEY_MONTHLY_BUDGET, "全局月预算(元)", Money.formatCents(prefs.getLong(KEY_MONTHLY_BUDGET, 0L)))
-        out.row(KEY_DAILY_MODE, "日预算模式", if (prefs.getBoolean(KEY_DAILY_MODE, false)) "1" else "0")
-        out.row(KEY_DAILY_BUDGET, "日预算(元)", Money.formatCents(prefs.getLong(KEY_DAILY_BUDGET, 0L)))
-        out.row(KEY_DEPOSIT_GOAL, "存款目标(元)", Money.formatCents(prefs.getLong(KEY_DEPOSIT_GOAL, 0L)))
-        out.row(KEY_MONTH_START_DAY, "月首日", prefs.getInt(KEY_MONTH_START_DAY, 1).toString())
-        out.row(KEY_CAT_BUDGET_MODE, "分类预算模式", prefs.getString(KEY_CAT_BUDGET_MODE, "").orEmpty())
+        // 读取一律走类型安全的取值：历史版本 / 旧备份可能把数值键存成字符串，
+        // 直接用 prefs.getLong 会抛 ClassCastException（String cannot be cast to Long）
+        out.row(KEY_MONTHLY_BUDGET, "全局月预算(元)", Money.formatCents(longPref(prefs, KEY_MONTHLY_BUDGET)))
+        out.row(KEY_DAILY_MODE, "日预算模式", if (boolPref(prefs, KEY_DAILY_MODE)) "1" else "0")
+        out.row(KEY_DAILY_BUDGET, "日预算(元)", Money.formatCents(longPref(prefs, KEY_DAILY_BUDGET)))
+        out.row(KEY_DEPOSIT_GOAL, "存款目标(元)", Money.formatCents(longPref(prefs, KEY_DEPOSIT_GOAL)))
+        out.row(KEY_MONTH_START_DAY, "月首日", intPref(prefs, KEY_MONTH_START_DAY, 1).toString())
+        out.row(KEY_CAT_BUDGET_MODE, "分类预算模式", prefs.all[KEY_CAT_BUDGET_MODE]?.toString().orEmpty())
 
         prefs.all.keys
             .filter { it.startsWith(KEY_BUDGET_PLAN_PREFIX) }
@@ -210,16 +212,21 @@ object BackupCsv {
                 out.row(
                     key,
                     "${key.removePrefix(KEY_BUDGET_PLAN_PREFIX)} 月预算",
-                    prefs.getString(key, "").orEmpty(),
+                    prefs.all[key]?.toString().orEmpty(),
                 )
             }
         prefs.all.keys
-            .filter { it.startsWith(KEY_CAT_BUDGET_PREFIX) && !it.startsWith(KEY_CAT_BUDGET_PCT_PREFIX) }
+            // category_budget_mode 也以 category_budget_ 开头，但它是字符串键，不能按金额读
+            .filter {
+                it.startsWith(KEY_CAT_BUDGET_PREFIX) &&
+                    !it.startsWith(KEY_CAT_BUDGET_PCT_PREFIX) &&
+                    it != KEY_CAT_BUDGET_MODE
+            }
             .sorted()
             .forEach { key ->
                 val id = key.removePrefix(KEY_CAT_BUDGET_PREFIX).toLongOrNull()
                 val name = id?.let { categoryName[it] }
-                out.row(key, "分类预算${name?.let { " · $it" } ?: ""}(元)", Money.formatCents(prefs.getLong(key, 0L)))
+                out.row(key, "分类预算${name?.let { " · $it" } ?: ""}(元)", Money.formatCents(longPref(prefs, key)))
             }
         prefs.all.keys
             .filter { it.startsWith(KEY_CAT_BUDGET_PCT_PREFIX) }
@@ -227,7 +234,7 @@ object BackupCsv {
             .forEach { key ->
                 val id = key.removePrefix(KEY_CAT_BUDGET_PCT_PREFIX).toLongOrNull()
                 val name = id?.let { categoryName[it] }
-                out.row(key, "分类预算占比${name?.let { " · $it" } ?: ""}(‱)", prefs.getInt(key, 0).toString())
+                out.row(key, "分类预算占比${name?.let { " · $it" } ?: ""}(‱)", intPref(prefs, key, 0).toString())
             }
     }
 
@@ -566,7 +573,8 @@ object BackupCsv {
                     if (pct == null) editor.remove(key) else editor.putInt(key, pct)
                 }
                 key == KEY_MONTHLY_BUDGET || key == KEY_DAILY_BUDGET || key == KEY_DEPOSIT_GOAL ||
-                    (key.startsWith(KEY_CAT_BUDGET_PREFIX) && !key.startsWith(KEY_CAT_BUDGET_PCT_PREFIX)) -> {
+                    (key.startsWith(KEY_CAT_BUDGET_PREFIX) && !key.startsWith(KEY_CAT_BUDGET_PCT_PREFIX) &&
+                        key != KEY_CAT_BUDGET_MODE) -> {
                     val cents = amountOf(value)
                     if (cents == null) editor.remove(key) else editor.putLong(key, cents)
                 }
@@ -665,6 +673,29 @@ object BackupCsv {
         return value == "1" || value.equals("true", true) || value == "是" ||
             value == "开启" || value == "已扣"
     }
+
+    /** 类型安全的设置读取：无论历史数据存成 Long / Int / String 都不会抛 ClassCastException */
+    private fun longPref(prefs: SharedPreferences, key: String, fallback: Long = 0L): Long =
+        when (val value = prefs.all[key]) {
+            is Long -> value
+            is Int -> value.toLong()
+            is Float -> value.toLong()
+            is String -> value.trim().toLongOrNull() ?: fallback
+            else -> fallback
+        }
+
+    private fun intPref(prefs: SharedPreferences, key: String, fallback: Int = 0): Int =
+        longPref(prefs, key, fallback.toLong()).let { raw ->
+            if (raw in Int.MIN_VALUE..Int.MAX_VALUE) raw.toInt() else fallback
+        }
+
+    private fun boolPref(prefs: SharedPreferences, key: String, fallback: Boolean = false): Boolean =
+        when (val value = prefs.all[key]) {
+            is Boolean -> value
+            is String -> value == "1" || value.equals("true", true)
+            is Number -> value.toLong() != 0L
+            else -> fallback
+        }
 
     /** 金额文本 → 分（取绝对值；去掉货币符号与空格） */
     private fun amountOf(text: String): Long? {

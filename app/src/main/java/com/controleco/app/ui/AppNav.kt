@@ -198,6 +198,7 @@ fun AccBookNav(
                 onOpenImport = { navController.navigate("backup") },
                 onOpenSettings = { navController.navigate("settings") },
                 onOpenCategories = { navController.navigate("categories") },
+                onOpenAccounts = { navController.navigate("accounts") },
                 onOpenReward = { navController.navigate("reward") },
                 onOpenCalendar = { navController.navigate("calendar") },
                 onOpenPlan = { navController.navigate("plan") },
@@ -330,6 +331,7 @@ private fun MainScaffold(
     onOpenImport: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenCategories: () -> Unit,
+    onOpenAccounts: () -> Unit,
     onOpenReward: () -> Unit,
     onOpenCalendar: () -> Unit,
     onOpenPlan: () -> Unit,
@@ -377,6 +379,7 @@ private fun MainScaffold(
                     onOpenPending = onOpenPending,
                     onOpenSettings = onOpenSettings,
                     onOpenCategories = onOpenCategories,
+                    onOpenAccounts = onOpenAccounts,
                     onOpenReward = onOpenReward,
                     onOpenCalendar = onOpenCalendar,
                     onOpenPlan = onOpenPlan,
@@ -425,6 +428,7 @@ private fun TabPage(
     onOpenPending: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenCategories: () -> Unit,
+    onOpenAccounts: () -> Unit,
     onOpenReward: () -> Unit,
     onOpenCalendar: () -> Unit,
     onOpenPlan: () -> Unit,
@@ -435,6 +439,7 @@ private fun TabPage(
         0 -> HomeScreen(
             vm = vm,
             onOpenCategories = onOpenCategories,
+            onOpenAccounts = onOpenAccounts,
         )
         1 -> TransactionListScreen(
             vm = vm,
