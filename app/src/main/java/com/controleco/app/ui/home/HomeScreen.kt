@@ -300,6 +300,10 @@ fun HomeScreen(
             micro = "${period.start.year} / $monthEn 账本",
             title = monthCn,
             low = modeLow,
+            action = {
+                // 资产页：右上角「账户」入口，和左上角标题同处顶栏，水平对齐
+                if (mode == 2) AccountEntry(onClick = onOpenAccounts)
+            },
         )
         Box(
             Modifier
@@ -386,16 +390,6 @@ fun HomeScreen(
                         .padding(top = 10.dp, end = 0.dp),
                 ) {
                     ManageButton(onClick = onOpenCategories)
-                }
-            }
-            // 资产页右上角：进入账户管理
-            if (mode == 2) {
-                Box(
-                    Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(top = 10.dp, end = 0.dp),
-                ) {
-                    AccountEntry(onClick = onOpenAccounts)
                 }
             }
         }
