@@ -235,6 +235,25 @@ object InstallmentMath {
     fun excludesAssetAt(deductAsset: Boolean, excludePeriodsText: String?, index: Int): Boolean =
         !deductAsset || index in parseExcludedIndexes(excludePeriodsText)
 
+    /**
+     * 分期第 index 期是否计入收支统计：
+     * countInStats=false → 全不计入；countInStatsPeriods 为空 → 全部计入；
+     * 否则只在列表内的期计入。列表格式同「不扣资产期数」（1,3 或 1-3,6）；
+     * 写 "0" 时解析为空集，效果等同全部不计入。
+     */
+    fun countsInStats(
+        countInStats: Boolean,
+        countInStatsPeriods: String?,
+        periods: Int,
+        index: Int,
+    ): Boolean = countInStats &&
+        (countInStatsPeriods.isNullOrBlank() || index in parseExcludedPeriods(countInStatsPeriods, periods))
+
+    /** 周期记账第 index 次是否计入收支统计（同上，按第几次判断） */
+    fun countsInStatsAt(countInStats: Boolean, countInStatsPeriods: String?, index: Int): Boolean =
+        countInStats &&
+            (countInStatsPeriods.isNullOrBlank() || index in parseExcludedIndexes(countInStatsPeriods))
+
     const val MAX_PERIOD_INDEX = 10_000
 }
 

@@ -48,10 +48,12 @@ object BackupStore {
 
     private const val APP_TAG = "ControlECO"
     /**
-     * 备份格式版本：跟随数据库版本（v17 起账单 / 分期 / 周期多了「计入账单和收支统计」）。
+     * 备份格式版本：跟随数据库版本。
+     * v17：账单 / 分期 / 周期多了「计入账单和收支统计」。
+     * v18：分期 / 周期多了「计入统计生效期数」（countInStatsPeriods）。
      * 导入不看这个值（缺字段一律按默认值还原），只用于识别备份出自哪一代数据结构。
      */
-    private const val FORMAT_VERSION = 17
+    private const val FORMAT_VERSION = 18
 
     /** 不参与导出的设置键（本地文件路径，换设备后用不了） */
     private val EXCLUDED_SETTINGS = setOf(
@@ -241,6 +243,7 @@ object BackupStore {
         put("deductAsset", p.deductAsset)
         put("excludeAssetPeriods", p.excludeAssetPeriods)
         put("countInStats", p.countInStats)
+        put("countInStatsPeriods", p.countInStatsPeriods)
         put("postTimeMinutes", p.postTimeMinutes)
         put("note", p.note)
         put("postedPeriods", p.postedPeriods)
@@ -267,6 +270,7 @@ object BackupStore {
         put("postedCount", p.postedCount)
         put("excludeAssetPeriods", p.excludeAssetPeriods)
         put("countInStats", p.countInStats)
+        put("countInStatsPeriods", p.countInStatsPeriods)
         put("note", p.note)
         put("createdAt", p.createdAt)
     }
@@ -354,6 +358,7 @@ object BackupStore {
         deductAsset = o.optBoolean("deductAsset", true),
         excludeAssetPeriods = o.optString("excludeAssetPeriods"),
         countInStats = o.optBoolean("countInStats", true),
+        countInStatsPeriods = o.optString("countInStatsPeriods"),
         postTimeMinutes = o.optInt("postTimeMinutes", 540),
         note = o.optString("note"),
         postedPeriods = o.optInt("postedPeriods"),
@@ -380,6 +385,7 @@ object BackupStore {
         postedCount = o.optInt("postedCount"),
         excludeAssetPeriods = o.optString("excludeAssetPeriods"),
         countInStats = o.optBoolean("countInStats", true),
+        countInStatsPeriods = o.optString("countInStatsPeriods"),
         note = o.optString("note"),
         createdAt = o.optLong("createdAt"),
     )

@@ -23,8 +23,8 @@ android {
         minSdk = 26
         targetSdk = 35
         // 每次带修改的构建把第三位 +1；1.0.0 起为正式版本，版本名不再带 -beta 后缀
-        versionCode = 39
-        versionName = "1.0.4"
+        versionCode = 40
+        versionName = "1.0.5"
         // 内置构建提交短哈希，供「检查更新」判断本版本分支仓库是否有新提交
         buildConfigField("String", "GIT_COMMIT", "\"$gitCommitShort\"")
     }

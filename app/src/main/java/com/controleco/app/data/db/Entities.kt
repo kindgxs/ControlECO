@@ -158,6 +158,13 @@ data class InstallmentPlanEntity(
      */
     @ColumnInfo(defaultValue = "1")
     val countInStats: Boolean = true,
+    /**
+     * 「计入账单和收支统计」的生效期数：逗号分隔（例 "1,3,12" 或 "1-3,6"）。
+     * 空 = 所有期都计入；非空 = 仅列出的期计入；写 "0" 表示没有任何期计入。
+     * 仅在 [countInStats] = true 时生效。
+     */
+    @ColumnInfo(defaultValue = "")
+    val countInStatsPeriods: String = "",
     /** 出账时间（当天 0 点起的分钟数，默认 09:00）：到点才自动入账 */
     @ColumnInfo(defaultValue = "540")
     val postTimeMinutes: Int = 540,
@@ -214,6 +221,9 @@ data class RecurringPlanEntity(
      */
     @ColumnInfo(defaultValue = "1")
     val countInStats: Boolean = true,
+    /** 「计入账单和收支统计」的生效次数：格式同分期（1,3 或 1-3,6）；空 = 全部计入；写 "0" = 全部不计入 */
+    @ColumnInfo(defaultValue = "")
+    val countInStatsPeriods: String = "",
     val note: String = "",
     val createdAt: Long = System.currentTimeMillis(),
 )

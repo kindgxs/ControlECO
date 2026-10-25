@@ -44,6 +44,10 @@ object BackupCsv {
     private const val KEY_DAILY_MODE = "budget_daily_mode"
     private const val KEY_DAILY_BUDGET = "daily_budget_cents"
     private const val KEY_DEPOSIT_GOAL = "deposit_goal_cents"
+    private const val KEY_DEPOSIT_MONTH_GOAL_PREFIX = "deposit_goal_month_"
+    private const val KEY_DEPOSIT_PLAN_START = "deposit_plan_start_month"
+    private const val KEY_DEPOSIT_RANGE_MONTHS = "deposit_range_months"
+    private const val KEY_DEPOSIT_SHOW_ALL = "deposit_show_all_months"
     private const val KEY_MONTH_START_DAY = "month_start_day"
     private const val KEY_BUDGET_PLAN_PREFIX = "budget_plan_"
     private const val KEY_CAT_BUDGET_PREFIX = "category_budget_"
@@ -129,7 +133,7 @@ object BackupCsv {
         out.row(
             "id", "title", "accountId", "categoryId", "totalPrincipalCents", "totalInterestCents",
             "periods", "firstDate", "postTime", "deductAsset", "excludeAssetPeriods", "postedPeriods", "note",
-            "countInStats",
+            "countInStats", "countInStatsPeriods",
         )
         data.installments.forEach { p ->
             out.row(
@@ -143,6 +147,7 @@ object BackupCsv {
                 p.postedPeriods.toString(),
                 p.note,
                 if (p.countInStats) "1" else "0",
+                p.countInStatsPeriods,
             )
         }
 
@@ -150,7 +155,8 @@ object BackupCsv {
         out.row(
             "id", "title", "type", "amountCents", "categoryId", "accountId", "frequency",
             "intervalCount", "firstDate", "nextDate", "postTime", "deductAsset", "autoPost",
-            "endMode", "endCount", "endDate", "postedCount", "excludeAssetPeriods", "note", "countInStats",
+            "endMode", "endCount", "endDate", "postedCount", "excludeAssetPeriods", "note",
+            "countInStats", "countInStatsPeriods",
         )
         data.recurring.forEach { p ->
             out.row(
@@ -177,6 +183,7 @@ object BackupCsv {
                 p.excludeAssetPeriods,
                 p.note,
                 if (p.countInStats) "1" else "0",
+                p.countInStatsPeriods,
             )
         }
 
@@ -191,6 +198,7 @@ object BackupCsv {
 
         writeBudgets(out, prefs, data.categories)
         writeDeposits(out, data.transactions, zone)
+        writeDepositSettings(out, prefs)
         writeSettings(out, prefs)
         return out.toString()
     }
@@ -265,6 +273,41 @@ object BackupCsv {
         }
     }
 
+    /**
+     * 存款设置：全局目标、按月目标、存款计划起始月、显示范围、是否显示全部月份。
+     * 这些键在 settings 段也会导出，这里单独列出便于人工核对；导入时以本段为准还原。
+     */
+    private fun writeDepositSettings(out: Writer, prefs: SharedPreferences) {
+        out.marker("##deposit_settings|存款设置")
+        out.row("键", "说明", "值")
+        out.row(
+            KEY_DEPOSIT_GOAL, "全局存款目标(元)",
+            Money.formatCents(longPref(prefs, KEY_DEPOSIT_GOAL)),
+        )
+        prefs.all.keys
+            .filter { it.startsWith(KEY_DEPOSIT_MONTH_GOAL_PREFIX) }
+            .sorted()
+            .forEach { key ->
+                out.row(
+                    key,
+                    "${key.removePrefix(KEY_DEPOSIT_MONTH_GOAL_PREFIX)} 月存款目标(元)",
+                    Money.formatCents(longPref(prefs, key)),
+                )
+            }
+        out.row(
+            KEY_DEPOSIT_PLAN_START, "存款计划起始月",
+            prefs.getString(KEY_DEPOSIT_PLAN_START, null).orEmpty(),
+        )
+        out.row(
+            KEY_DEPOSIT_RANGE_MONTHS, "显示范围(月)",
+            intPref(prefs, KEY_DEPOSIT_RANGE_MONTHS, 12).toString(),
+        )
+        out.row(
+            KEY_DEPOSIT_SHOW_ALL, "显示全部月份",
+            if (boolPref(prefs, KEY_DEPOSIT_SHOW_ALL)) "1" else "0",
+        )
+    }
+
     private fun writeSettings(out: Writer, prefs: SharedPreferences) {
         out.marker("##settings|设置")
         out.row("键", "类型", "值")
@@ -289,6 +332,7 @@ object BackupCsv {
         // 设置与预算都在数据库写入成功之后再覆盖，避免中途失败把设置弄丢
         applySettings(prefs, toSection(sections["settings"]))
         applyBudgets(prefs, toSection(sections["budgets"]))
+        applyDepositSettings(prefs, toSection(sections["deposit_settings"]))
         return count
     }
 
@@ -408,6 +452,7 @@ object BackupCsv {
                     deductAsset = boolOf(sec.cell(row, "deductAsset"), fallback = true),
                     excludeAssetPeriods = sec.cell(row, "excludeAssetPeriods"),
                     countInStats = boolOf(sec.cell(row, "countInStats"), fallback = true),
+                    countInStatsPeriods = sec.cell(row, "countInStatsPeriods"),
                     postTimeMinutes = parseMinutes(sec.cell(row, "postTime")) ?: 540,
                     postedPeriods = sec.cell(row, "postedPeriods").toIntOrNull() ?: 0,
                     note = sec.cell(row, "note"),
@@ -449,6 +494,7 @@ object BackupCsv {
                     postedCount = sec.cell(row, "postedCount").toIntOrNull() ?: 0,
                     excludeAssetPeriods = sec.cell(row, "excludeAssetPeriods"),
                     countInStats = boolOf(sec.cell(row, "countInStats"), fallback = true),
+                    countInStatsPeriods = sec.cell(row, "countInStatsPeriods"),
                     note = sec.cell(row, "note"),
                 )
             }
@@ -589,6 +635,32 @@ object BackupCsv {
                 key == KEY_MONTH_START_DAY -> value.toIntOrNull()?.let { editor.putInt(key, it) }
                 key.startsWith(KEY_BUDGET_PLAN_PREFIX) ||
                     key == KEY_CAT_BUDGET_MODE -> if (value.isBlank()) editor.remove(key) else editor.putString(key, value)
+            }
+        }
+        editor.apply()
+    }
+
+    /**
+     * 还原存款设置：全局目标、按月目标、存款计划起始月、显示范围、是否显示全部月份。
+     * 旧备份没有本段时，settings 段里的同名键已在 [applySettings] 还原；本段存在时以本段为准。
+     */
+    private fun applyDepositSettings(prefs: SharedPreferences, section: Section?) {
+        if (section == null || section.rows.isEmpty()) return
+        val editor = prefs.edit()
+        section.rows.forEach { row ->
+            val key = secCell(section, row, "键")
+            if (key.isBlank()) return@forEach
+            val value = secCell(section, row, "值")
+            when {
+                key == KEY_DEPOSIT_GOAL || key.startsWith(KEY_DEPOSIT_MONTH_GOAL_PREFIX) -> {
+                    val cents = amountOf(value)
+                    if (cents == null || cents <= 0L) editor.remove(key) else editor.putLong(key, cents)
+                }
+                key == KEY_DEPOSIT_PLAN_START ->
+                    if (value.isBlank()) editor.remove(key) else editor.putString(key, value)
+                key == KEY_DEPOSIT_RANGE_MONTHS ->
+                    value.toIntOrNull()?.takeIf { it in 1..1200 }?.let { editor.putInt(key, it) }
+                key == KEY_DEPOSIT_SHOW_ALL -> editor.putBoolean(key, boolOf(value))
             }
         }
         editor.apply()

@@ -90,6 +90,8 @@ private data class InstallmentDraft(
     val excludeAssetPeriods: String,
     /** 计入账单和收支统计：与 deductAsset 独立 */
     val countInStats: Boolean,
+    /** 计入统计生效期数：空=全部；1,3 或 1-3,6；写 0=全部不计入 */
+    val countInStatsPeriods: String,
     val note: String,
 )
 
@@ -109,6 +111,8 @@ private data class RecurringDraft(
     val excludeAssetPeriods: String,
     /** 计入账单和收支统计：与 deductAsset 独立 */
     val countInStats: Boolean,
+    /** 计入统计生效次数：空=全部；1,3 或 1-3,6；写 0=全部不计入 */
+    val countInStatsPeriods: String,
     val endMode: RecurringEndMode,
     val endCount: Int,
     val endDate: LocalDate?,
@@ -270,6 +274,7 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     deductAsset = draft.deductAsset,
                     excludeAssetPeriods = draft.excludeAssetPeriods,
                     countInStats = draft.countInStats,
+                    countInStatsPeriods = draft.countInStatsPeriods,
                     postTimeMinutes = draft.postTimeMinutes,
                     note = draft.note,
                     onResult = onResult,
@@ -308,6 +313,7 @@ fun PlanScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                     endDateMillis = draft.endDate?.let { RecurringMath.millisAt(it) } ?: 0L,
                     excludeAssetPeriods = draft.excludeAssetPeriods,
                     countInStats = draft.countInStats,
+                    countInStatsPeriods = draft.countInStatsPeriods,
                     note = draft.note,
                     onResult = onResult,
                 )
@@ -693,8 +699,9 @@ private fun InstallmentEditorSheet(
     var principalText by remember(initial?.id) {
         mutableStateOf(initial?.let { Money.formatCents(it.totalPrincipalCents) } ?: "")
     }
+    // 利息为 0（免息）也保留：不做 takeIf { > 0 }，否则保存为 0 后再打开会显示为空
     var interestText by remember(initial?.id) {
-        mutableStateOf(initial?.totalInterestCents?.takeIf { it > 0L }?.let { Money.formatCents(it) } ?: "")
+        mutableStateOf(initial?.let { Money.formatCents(it.totalInterestCents) } ?: "")
     }
     var periodsText by remember(initial?.id) { mutableStateOf(initial?.periods?.toString() ?: "12") }
     var firstDate by remember(initial?.id) {
@@ -706,6 +713,7 @@ private fun InstallmentEditorSheet(
     var deduct by remember(initial?.id) { mutableStateOf(initial?.deductAsset ?: true) }
     var excludePeriodsText by remember(initial?.id) { mutableStateOf(initial?.excludeAssetPeriods ?: "") }
     var countInStats by remember(initial?.id) { mutableStateOf(initial?.countInStats ?: true) }
+    var countInStatsPeriodsText by remember(initial?.id) { mutableStateOf(initial?.countInStatsPeriods ?: "") }
     var note by remember(initial?.id) { mutableStateOf(initial?.note ?: "") }
     var localError by remember(initial?.id) { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -799,6 +807,21 @@ private fun InstallmentEditorSheet(
                 subtitle = "关闭后每期只在账单显示一条记录，不计入收支/预算/存款统计；" +
                     "与「只记账，不扣资产」互不影响；修改会同步已出账的账单",
             )
+            if (countInStats) {
+                EcoField(
+                    label = "计入统计生效期数",
+                    value = countInStatsPeriodsText,
+                    onValueChange = {
+                        countInStatsPeriodsText = it.filter { ch ->
+                            ch.isDigit() || ch == ',' || ch == '-' || ch == '，' ||
+                                ch == '－' || ch == '~'
+                        }
+                        localError = null
+                    },
+                    placeholder = "留空 = 所有期都计入；或 1-3,6；写 0 = 全部不计入",
+                    supporting = "支持单期与区间：1,3,12 或 1-3,6",
+                )
+            }
 
             Text(
                 "每期约 ${Money.formatYuanGroupedFixed(perPeriod)} · 总还款 " +
@@ -849,6 +872,7 @@ private fun InstallmentEditorSheet(
                                     ""
                                 },
                                 countInStats = countInStats,
+                                countInStatsPeriods = countInStatsPeriodsText,
                                 note = note.trim(),
                             ),
                         ) { err ->
@@ -936,6 +960,7 @@ private fun RecurringEditorSheet(
     var deduct by remember(initial?.id) { mutableStateOf(initial?.deductAsset ?: true) }
     var excludePeriodsText by remember(initial?.id) { mutableStateOf(initial?.excludeAssetPeriods ?: "") }
     var countInStats by remember(initial?.id) { mutableStateOf(initial?.countInStats ?: true) }
+    var countInStatsPeriodsText by remember(initial?.id) { mutableStateOf(initial?.countInStatsPeriods ?: "") }
     var note by remember(initial?.id) { mutableStateOf(initial?.note ?: "") }
     var localError by remember(initial?.id) { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
@@ -1064,6 +1089,21 @@ private fun RecurringEditorSheet(
                 subtitle = "关闭后每次只在账单显示一条记录，不计入收支/预算/存款统计；" +
                     "与「只记账，不扣资产」互不影响；修改会同步已出账的账单",
             )
+            if (countInStats) {
+                EcoField(
+                    label = "计入统计生效次数",
+                    value = countInStatsPeriodsText,
+                    onValueChange = {
+                        countInStatsPeriodsText = it.filter { ch ->
+                            ch.isDigit() || ch == ',' || ch == '-' || ch == '，' ||
+                                ch == '－' || ch == '~'
+                        }
+                        localError = null
+                    },
+                    placeholder = "留空 = 全部计入；或 1-3,6；写 0 = 全部不计入",
+                    supporting = "支持单次与区间：1,3,12 或 1-3,6",
+                )
+            }
             EcoField(
                 label = "备注",
                 value = note,
@@ -1115,6 +1155,7 @@ private fun RecurringEditorSheet(
                                     ""
                                 },
                                 countInStats = countInStats,
+                                countInStatsPeriods = countInStatsPeriodsText,
                                 endMode = endMode,
                                 endCount = if (endMode == RecurringEndMode.COUNT) {
                                     endCountText.toIntOrNull() ?: 0

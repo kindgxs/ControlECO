@@ -1909,6 +1909,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         excludeAssetPeriods: String = "",
         /** 是否计入账单和收支统计：与 deductAsset 独立，false = 每期只在账单显示一条记录 */
         countInStats: Boolean = true,
+        /** 「计入统计」生效期数：空 = 全部计入；1,3 或 1-3,6；写 0 = 全部不计入 */
+        countInStatsPeriods: String = "",
         postTimeMinutes: Int = 540,
         note: String = "",
         onResult: (String?) -> Unit,
@@ -1937,6 +1939,10 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         periods,
                     ),
                     countInStats = countInStats,
+                    countInStatsPeriods = InstallmentMath.encodeExcludedPeriods(
+                        InstallmentMath.parseExcludedPeriods(countInStatsPeriods, periods),
+                        periods,
+                    ),
                     postTimeMinutes = postTimeMinutes.coerceIn(0, 24 * 60 - 1),
                     note = note,
                     postedPeriods = oldPlan?.postedPeriods ?: 0,
@@ -1978,6 +1984,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         autoPost: Boolean = false,
         /** 是否计入账单和收支统计：与 deductAsset 独立，false = 每次只在账单显示一条记录 */
         countInStats: Boolean = true,
+        /** 「计入统计」生效次数：空 = 全部计入；1,3 或 1-3,6；写 0 = 全部不计入 */
+        countInStatsPeriods: String = "",
         note: String = "",
         onResult: (String?) -> Unit,
     ) {
@@ -2044,6 +2052,12 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         InstallmentMath.MAX_PERIOD_INDEX,
                     ),
                     countInStats = countInStats,
+                    countInStatsPeriods = InstallmentMath.encodeExcludedPeriods(
+                        InstallmentMath.parseExcludedPeriods(
+                            countInStatsPeriods, InstallmentMath.MAX_PERIOD_INDEX,
+                        ),
+                        InstallmentMath.MAX_PERIOD_INDEX,
+                    ),
                     note = note,
                     createdAt = old?.createdAt ?: System.currentTimeMillis(),
                 )
@@ -2081,8 +2095,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     val exclude = InstallmentMath.excludesAsset(
                         plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
                     )
-                    if (tx.excludeFromAssets != exclude || tx.countInStats != plan.countInStats) {
-                        txDao.updatePlanEntryFlags(tx.id, exclude, plan.countInStats)
+                    val counts = InstallmentMath.countsInStats(
+                        plan.countInStats, plan.countInStatsPeriods, plan.periods, index,
+                    )
+                    if (tx.excludeFromAssets != exclude || tx.countInStats != counts) {
+                        txDao.updatePlanEntryFlags(tx.id, exclude, counts)
                     }
                 }
             }
@@ -2099,8 +2116,11 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     val exclude = InstallmentMath.excludesAssetAt(
                         plan.deductAsset, plan.excludeAssetPeriods, index,
                     )
-                    if (tx.excludeFromAssets != exclude || tx.countInStats != plan.countInStats) {
-                        txDao.updatePlanEntryFlags(tx.id, exclude, plan.countInStats)
+                    val counts = InstallmentMath.countsInStatsAt(
+                        plan.countInStats, plan.countInStatsPeriods, index,
+                    )
+                    if (tx.excludeFromAssets != exclude || tx.countInStats != counts) {
+                        txDao.updatePlanEntryFlags(tx.id, exclude, counts)
                     }
                 }
             }
@@ -2191,7 +2211,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                             excludeFromAssets = InstallmentMath.excludesAsset(
                                 plan.deductAsset, plan.excludeAssetPeriods, plan.periods, index,
                             ),
-                            countInStats = plan.countInStats,
+                            countInStats = InstallmentMath.countsInStats(
+                                plan.countInStats, plan.countInStatsPeriods, plan.periods, index,
+                            ),
                         ),
                     )
                 }
@@ -2242,7 +2264,9 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                             excludeFromAssets = InstallmentMath.excludesAssetAt(
                                 plan.deductAsset, plan.excludeAssetPeriods, index,
                             ),
-                            countInStats = plan.countInStats,
+                            countInStats = InstallmentMath.countsInStatsAt(
+                                plan.countInStats, plan.countInStatsPeriods, index,
+                            ),
                         ),
                     )
                 }
