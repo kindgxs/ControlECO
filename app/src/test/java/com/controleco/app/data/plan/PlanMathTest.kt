@@ -239,4 +239,31 @@ class PlanMathTest {
         assertEquals(RecurringEndMode.COUNT, RecurringEndMode.of("COUNT"))
         assertEquals(RecurringEndMode.DATE, RecurringEndMode.of("DATE"))
     }
+
+    @Test
+    fun `计入统计判断_总开关与指定期数`() {
+        // 总开关关闭：全部不计入
+        assertFalse(InstallmentMath.countsInStats(false, "", 12, 1))
+        assertFalse(InstallmentMath.countsInStats(false, "1,3", 12, 1))
+        // 总开关打开且未指定期数：全部计入
+        assertTrue(InstallmentMath.countsInStats(true, "", 12, 1))
+        assertTrue(InstallmentMath.countsInStats(true, "", 12, 12))
+        // 总开关打开且指定生效期数：只在列表内计入
+        assertTrue(InstallmentMath.countsInStats(true, "1,3", 12, 1))
+        assertTrue(InstallmentMath.countsInStats(true, "1,3", 12, 3))
+        assertFalse(InstallmentMath.countsInStats(true, "1,3", 12, 2))
+        // 写 0 时全部不计入
+        assertFalse(InstallmentMath.countsInStats(true, "0", 12, 1))
+        // 区间写法
+        assertTrue(InstallmentMath.countsInStats(true, "1-3,6", 12, 2))
+        assertFalse(InstallmentMath.countsInStats(true, "1-3,6", 12, 4))
+    }
+
+    @Test
+    fun `周期记账计入统计判断_按次数`() {
+        assertFalse(InstallmentMath.countsInStatsAt(false, "", 1))
+        assertTrue(InstallmentMath.countsInStatsAt(true, "", 1))
+        assertTrue(InstallmentMath.countsInStatsAt(true, "1,3", 1))
+        assertFalse(InstallmentMath.countsInStatsAt(true, "1,3", 2))
+    }
 }

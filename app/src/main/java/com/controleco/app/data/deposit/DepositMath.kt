@@ -29,12 +29,17 @@ object DepositMath {
             if (goalCents <= 0L) null else savingCents.toFloat() / goalCents
     }
 
-    /** 单笔可计入支出的金额（已退款支出 = 0） */
+    /** 单笔可计入支出的金额：不计入统计 或 已退款支出 = 0；已关联退款按差额计 */
     fun expenseCentsOf(row: TransactionRow): Long =
-        if (row.type == TxType.EXPENSE && row.refundMark != RefundMark.REFUNDED_EXPENSE) row.amountCents else 0L
+        if (row.type == TxType.EXPENSE && row.countInStats && row.refundMark != RefundMark.REFUNDED_EXPENSE) {
+            maxOf(0L, row.amountCents - row.linkedRefundCents)
+        } else 0L
 
+    /** 单笔可计入收入的金额：不计入统计 = 0；已关联退款只计超出原支出的部分 */
     fun incomeCentsOf(row: TransactionRow): Long =
-        if (row.type == TxType.INCOME) row.amountCents else 0L
+        if (row.type == TxType.INCOME && row.countInStats) {
+            if (row.refundLinkId > 0) maxOf(0L, row.amountCents - row.linkedExpenseCents) else row.amountCents
+        } else 0L
 
     /** 按自然月汇总（用于存款趋势；未做年份过滤，调用方传多少算多少） */
     fun monthlySavings(

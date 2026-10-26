@@ -57,7 +57,7 @@ object BackupCsv {
 
     private val TX_HEADER = listOf(
         "时间", "类型", "分类", "金额", "资产账户", "记录标识", "备注", "二级分类", "币种",
-        "编号", "来源", "退款状态", "退款待定", "不扣资产", "流水号", "创建时间", "商户", "计入统计",
+        "编号", "来源", "退款状态", "退款待定", "不扣资产", "流水号", "创建时间", "商户", "计入统计", "退款关联",
     )
 
     private val DATE_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -127,6 +127,7 @@ object BackupCsv {
                 t.createdAt.toString(),
                 t.counterparty,
                 if (t.countInStats) "1" else "0",
+                t.refundLinkId.toString(),
             )
         }
 
@@ -256,6 +257,7 @@ object BackupCsv {
         out.row("月份", "收入", "支出", "净存款")
         val buckets = LinkedHashMap<YearMonth, LongArray>()
         transactions.forEach { t ->
+            if (!t.countInStats) return@forEach
             val month = YearMonth.from(Instant.ofEpochMilli(t.timestamp).atZone(zone).toLocalDate())
             val acc = buckets.getOrPut(month) { LongArray(2) }
             if (t.type == TxType.INCOME) {
@@ -422,6 +424,7 @@ object BackupCsv {
                     flowId = sec.cell(row, "流水号"),
                     excludeFromAssets = boolOf(sec.cell(row, "不扣资产")),
                     countInStats = boolOf(sec.cell(row, "计入统计"), fallback = true),
+                    refundLinkId = sec.cell(row, "退款关联").toLongOrNull() ?: 0L,
                     createdAt = sec.cell(row, "创建时间").toLongOrNull() ?: timestamp,
                 )
             }
@@ -434,6 +437,13 @@ object BackupCsv {
             .filter { t -> t.externalId?.let { seenExternalIds.add(it) } ?: true }
             .map { t -> if (t.id > 0 && usedTxIds.add(t.id)) t else t.copy(id = 0) }
 
+        // 若分期/周期计划指向的账户或分类在备份文件里不存在，fallback 到首个有效账户/一级分类，
+        // 避免关联到一个不存在的 id 导致计划页看不到记录。
+        val defaultAccountId = accountList.firstOrNull()?.id ?: 0L
+        val defaultCategoryId = categoryList.firstOrNull { it.parentId == null }?.id
+            ?: categoryList.firstOrNull()?.id
+            ?: 0L
+
         val usedInstallmentIds = HashSet<Long>()
         val installments = installmentSection?.let { sec ->
             sec.rows.mapNotNull { row ->
@@ -444,8 +454,8 @@ object BackupCsv {
                 InstallmentPlanEntity(
                     id = if (rawId > 0 && usedInstallmentIds.add(rawId)) rawId else 0L,
                     title = sec.cell(row, "title"),
-                    accountId = accountIdMap[accountId] ?: accountId,
-                    categoryId = categoryIdMap[categoryId] ?: categoryId,
+                    accountId = accountIdMap[accountId] ?: if (accountId > 0) defaultAccountId else accountId,
+                    categoryId = categoryIdMap[categoryId] ?: if (categoryId > 0) defaultCategoryId else categoryId,
                     totalPrincipalCents = principal,
                     totalInterestCents = sec.cell(row, "totalInterestCents").toLongOrNull() ?: 0L,
                     periods = sec.cell(row, "periods").toIntOrNull() ?: 1,
@@ -480,8 +490,8 @@ object BackupCsv {
                     title = sec.cell(row, "title"),
                     type = enumOf(sec.cell(row, "type"), TxType.EXPENSE),
                     amountCents = amount,
-                    categoryId = categoryIdMap[categoryId] ?: categoryId,
-                    accountId = accountIdMap[accountId] ?: accountId,
+                    categoryId = categoryIdMap[categoryId] ?: if (categoryId > 0) defaultCategoryId else categoryId,
+                    accountId = accountIdMap[accountId] ?: if (accountId > 0) defaultAccountId else accountId,
                     frequency = sec.cell(row, "frequency").ifBlank { "MONTHLY" },
                     intervalCount = sec.cell(row, "intervalCount").toIntOrNull()?.coerceIn(1, 3650) ?: 1,
                     firstDateMillis = first,

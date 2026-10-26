@@ -30,6 +30,21 @@ data class TransactionRow(
      * 不计入收支合计 / 分类统计 / 预算 / 存款等所有统计。
      */
     val countInStats: Boolean = true,
+    /**
+     * 退款关联：退款收入行指向被退款的原支出 id（> 0）。
+     * 关联后按差额统计预算、账单、存款。
+     */
+    val refundLinkId: Long = 0L,
+    /**
+     * 该支出已关联的退款合计（分）。仅对支出行有意义：
+     * effectiveExpense = max(0, amountCents - linkedRefundCents)。
+     */
+    val linkedRefundCents: Long = 0L,
+    /**
+     * 该退款收入所关联的原支出金额（分）。仅对退款收入行有意义：
+     * effectiveIncome = max(0, amountCents - linkedExpenseCents)。
+     */
+    val linkedExpenseCents: Long = 0L,
     /** 入库时间：待确认列表把捕获条目与退款条目按这个排（而不是业务时间） */
     val createdAt: Long = 0,
 )
@@ -66,10 +81,20 @@ interface TransactionDao {
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
            t.countInStats AS countInStats,
+           t.refundLinkId AS refundLinkId,
+           COALESCE(r.totalRefundCents, 0) AS linkedRefundCents,
+           COALESCE(e.amountCents, 0) AS linkedExpenseCents,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
+           LEFT JOIN (
+               SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
+               FROM transactions
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               GROUP BY refundLinkId
+           ) r ON r.refundLinkId = t.id
+           LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
            WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
            ORDER BY t.timestamp DESC, t.id DESC"""
     )
@@ -80,40 +105,83 @@ interface TransactionDao {
     fun observeEarliestTimestamp(): Flow<Long?>
 
     @Query(
-        """SELECT type AS type, SUM(amountCents) AS totalCents FROM transactions
-           WHERE timestamp >= :startMillis AND timestamp < :endMillis
-             AND countInStats = 1
-           GROUP BY type"""
+        """SELECT type, SUM(netCents) AS totalCents FROM (
+           SELECT 'EXPENSE' AS type,
+               CASE
+                   WHEN t.countInStats = 0 OR t.refundMark = 'REFUNDED_EXPENSE' THEN 0
+                   ELSE MAX(0, t.amountCents - COALESCE(r.totalRefundCents, 0))
+               END AS netCents
+           FROM transactions t
+           LEFT JOIN (
+               SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
+               FROM transactions
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               GROUP BY refundLinkId
+           ) r ON r.refundLinkId = t.id
+           WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis AND t.type = 'EXPENSE'
+           UNION ALL
+           SELECT 'INCOME' AS type,
+               CASE
+                   WHEN t.countInStats = 0 THEN 0
+                   WHEN t.refundLinkId > 0 THEN MAX(0, t.amountCents - COALESCE(e.amountCents, 0))
+                   ELSE t.amountCents
+               END AS netCents
+           FROM transactions t
+           LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
+           WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis AND t.type = 'INCOME'
+       )
+       GROUP BY type"""
     )
     fun observeTypeTotals(startMillis: Long, endMillis: Long): Flow<List<TypeTotalRow>>
 
     /**
-     * 本期「实际支出」：**未被标记「已退款」的支出账单**之和。
+     * 本期「实际支出」：**计入统计的支出账单**，并扣除已关联退款后的净额。
      *
-     * 退款收入只作为收入存在，**不再从支出里相减**——退款是成对的记录：
-     * 原支出被标「已退款」后直接不计入支出，退款那笔照常计入收入。
+     * 退款关联：关联到该支出的退款收入（countInStats = 1）会从支出中抵扣，
+     * 实际支出 = max(0, 支出金额 - 已关联退款合计)。
      * 首页「本月支出」与统计页「分类预算与占比」的实际支出都用这一条口径。
      */
     @Query(
-        """SELECT COALESCE(SUM(amountCents), 0) FROM transactions
-           WHERE timestamp >= :startMillis AND timestamp < :endMillis
-             AND type = 'EXPENSE' AND refundMark != 'REFUNDED_EXPENSE'
-             AND countInStats = 1"""
+        """SELECT COALESCE(SUM(
+           CASE
+               WHEN t.countInStats = 0 OR t.refundMark = 'REFUNDED_EXPENSE' THEN 0
+               ELSE MAX(0, t.amountCents - COALESCE(r.totalRefundCents, 0))
+           END
+       ), 0) FROM transactions t
+       LEFT JOIN (
+           SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
+           FROM transactions
+           WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+           GROUP BY refundLinkId
+       ) r ON r.refundLinkId = t.id
+       WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
+         AND t.type = 'EXPENSE'"""
     )
     fun observeSpendingTotal(startMillis: Long, endMillis: Long): Flow<Long>
 
     /**
-     * 本期分类支出：同一口径按分类分组（排除已退款的支出）。
+     * 本期分类支出：同一口径按分类分组，并扣除已关联退款后的净额。
      * 各分类之和恒等于 [observeSpendingTotal]，圆环与清单不会互相对不上。
      */
     @Query(
-        """SELECT c.id AS categoryId, c.name AS categoryName, SUM(t.amountCents) AS totalCents
-           FROM transactions t JOIN categories c ON t.categoryId = c.id
-           WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
-             AND t.type = 'EXPENSE' AND t.refundMark != 'REFUNDED_EXPENSE'
-             AND t.countInStats = 1
-           GROUP BY c.id, c.name
-           ORDER BY totalCents DESC"""
+        """SELECT c.id AS categoryId, c.name AS categoryName, SUM(
+           CASE
+               WHEN t.countInStats = 0 OR t.refundMark = 'REFUNDED_EXPENSE' THEN 0
+               ELSE MAX(0, t.amountCents - COALESCE(r.totalRefundCents, 0))
+           END
+       ) AS totalCents
+       FROM transactions t
+       JOIN categories c ON t.categoryId = c.id
+       LEFT JOIN (
+           SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
+           FROM transactions
+           WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+           GROUP BY refundLinkId
+       ) r ON r.refundLinkId = t.id
+       WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
+         AND t.type = 'EXPENSE'
+       GROUP BY c.id, c.name
+       ORDER BY totalCents DESC"""
     )
     fun observeSpendingCategorySums(startMillis: Long, endMillis: Long): Flow<List<CategorySumRow>>
 
@@ -202,10 +270,20 @@ interface TransactionDao {
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
            t.countInStats AS countInStats,
+           t.refundLinkId AS refundLinkId,
+           COALESCE(r.totalRefundCents, 0) AS linkedRefundCents,
+           COALESCE(e.amountCents, 0) AS linkedExpenseCents,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
+           LEFT JOIN (
+               SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
+               FROM transactions
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               GROUP BY refundLinkId
+           ) r ON r.refundLinkId = t.id
+           LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
            WHERE t.type = 'EXPENSE' AND t.refundMark = 'NONE' AND t.timestamp >= :since
            ORDER BY t.timestamp DESC LIMIT 50"""
     )
@@ -224,10 +302,20 @@ interface TransactionDao {
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
            t.countInStats AS countInStats,
+           t.refundLinkId AS refundLinkId,
+           COALESCE(r.totalRefundCents, 0) AS linkedRefundCents,
+           COALESCE(e.amountCents, 0) AS linkedExpenseCents,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
+           LEFT JOIN (
+               SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
+               FROM transactions
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               GROUP BY refundLinkId
+           ) r ON r.refundLinkId = t.id
+           LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
            WHERE t.refundPending = 1
            ORDER BY t.timestamp DESC, t.id DESC"""
     )
@@ -248,10 +336,20 @@ interface TransactionDao {
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
            t.countInStats AS countInStats,
+           t.refundLinkId AS refundLinkId,
+           COALESCE(r.totalRefundCents, 0) AS linkedRefundCents,
+           COALESCE(e.amountCents, 0) AS linkedExpenseCents,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
+           LEFT JOIN (
+               SELECT refundLinkId, SUM(amountCents) AS totalRefundCents
+               FROM transactions
+               WHERE refundLinkId > 0 AND type = 'INCOME' AND refundMark = 'REFUND_INCOME' AND countInStats = 1
+               GROUP BY refundLinkId
+           ) r ON r.refundLinkId = t.id
+           LEFT JOIN transactions e ON e.id = t.refundLinkId AND e.type = 'EXPENSE'
            WHERE t.type = 'EXPENSE' AND t.amountCents = :amountCents
              AND t.refundMark != 'REFUNDED_EXPENSE'
            ORDER BY t.timestamp DESC LIMIT 50"""
@@ -275,6 +373,39 @@ interface TransactionDao {
            WHERE id = :refundId"""
     )
     suspend fun markRefundAsIncome(refundId: Long)
+
+    /** 把退款收入与原支出建立关联（ refundLinkId 指向 expenseId ） */
+    @Query("UPDATE transactions SET refundLinkId = :expenseId WHERE id = :refundId AND type = 'INCOME' AND refundMark = 'REFUND_INCOME'")
+    suspend fun linkRefund(refundId: Long, expenseId: Long)
+
+    /** 解除退款收入的关联 */
+    @Query("UPDATE transactions SET refundLinkId = 0 WHERE id = :refundId")
+    suspend fun unlinkRefund(refundId: Long)
+
+    /**
+     * 指定区间内、尚未关联的退款收入（自动匹配用）。
+     * 只返回 countInStats = 1 的退款，因为不计入统计的退款不应用来抵扣支出。
+     */
+    @Query(
+        """SELECT t.id AS id, t.type AS type, t.amountCents AS amountCents, t.timestamp AS timestamp,
+           t.note AS note, t.counterparty AS counterparty, t.source AS source,
+           c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
+           a.id AS accountId, a.name AS accountName,
+           t.refundMark AS refundMark, t.refundPending AS refundPending,
+           t.countInStats AS countInStats,
+           t.refundLinkId AS refundLinkId,
+           0 AS linkedRefundCents,
+           0 AS linkedExpenseCents,
+           t.createdAt AS createdAt
+           FROM transactions t
+           JOIN categories c ON t.categoryId = c.id
+           JOIN accounts a ON t.accountId = a.id
+           WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
+             AND t.type = 'INCOME' AND t.refundMark = 'REFUND_INCOME'
+             AND t.refundLinkId = 0 AND t.countInStats = 1
+           ORDER BY t.timestamp DESC"""
+    )
+    suspend fun findUnlinkedRefundsInRange(startMillis: Long, endMillis: Long): List<TransactionRow>
 
     @Query("SELECT COUNT(*) FROM transactions WHERE categoryId = :categoryId")
     suspend fun countByCategory(categoryId: Long): Int
@@ -415,6 +546,10 @@ interface PlanDao {
     @Insert
     suspend fun insertInstallment(plan: InstallmentPlanEntity): Long
 
+    /** 备份还原专用：主键冲突时直接覆盖，避免自增 id 与显式 id 撞车导致整批失败。 */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertInstallmentForRestore(plan: InstallmentPlanEntity): Long
+
     @Update
     suspend fun updateInstallment(plan: InstallmentPlanEntity)
 
@@ -435,6 +570,10 @@ interface PlanDao {
 
     @Insert
     suspend fun insertRecurring(plan: RecurringPlanEntity): Long
+
+    /** 备份还原专用：主键冲突时直接覆盖，避免自增 id 与显式 id 撞车导致整批失败。 */
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertRecurringForRestore(plan: RecurringPlanEntity): Long
 
     @Update
     suspend fun updateRecurring(plan: RecurringPlanEntity)

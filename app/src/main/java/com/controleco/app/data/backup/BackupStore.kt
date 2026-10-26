@@ -100,8 +100,8 @@ object BackupStore {
             if (data.accounts.isNotEmpty()) accountDao.insertAll(data.accounts)
             if (data.categories.isNotEmpty()) categoryDao.insertAll(data.categories)
             if (data.transactions.isNotEmpty()) txDao.insertAll(data.transactions)
-            data.installments.forEach { planDao.insertInstallment(it) }
-            data.recurring.forEach { planDao.insertRecurring(it) }
+            data.installments.forEach { planDao.insertInstallmentForRestore(it) }
+            data.recurring.forEach { planDao.insertRecurringForRestore(it) }
             // id 原样保留：商户归类里的分类/账户指向不会因为还原而错位
             data.merchantRules.forEach { merchantRuleDao.upsert(it) }
         }
@@ -225,6 +225,7 @@ object BackupStore {
         put("externalId", t.externalId ?: JSONObject.NULL)
         put("refundMark", t.refundMark.name)
         put("refundPending", t.refundPending)
+        put("refundLinkId", t.refundLinkId)
         put("flowId", t.flowId)
         put("excludeFromAssets", t.excludeFromAssets)
         put("countInStats", t.countInStats)
@@ -347,6 +348,7 @@ object BackupStore {
         externalId = if (o.isNull("externalId")) null else o.optString("externalId"),
         refundMark = enumOf<RefundMark>(o.optString("refundMark"), RefundMark.NONE),
         refundPending = o.optBoolean("refundPending"),
+        refundLinkId = o.optLong("refundLinkId"),
         flowId = o.optString("flowId"),
         excludeFromAssets = o.optBoolean("excludeFromAssets"),
         countInStats = o.optBoolean("countInStats", true),

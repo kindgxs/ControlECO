@@ -28,10 +28,10 @@ class BackupCsvTest {
         2,早餐,EXPENSE,0,,1
         3,工资,INCOME,0,,
         ##transactions|交易记录
-        时间,类型,分类,金额,资产账户,记录标识,备注,二级分类,币种,编号,来源,退款状态,退款待定,不扣资产,流水号,创建时间,商户,计入统计
-        2026-10-24 12:03:00,支出,餐饮,25.00,招商信用卡,,午饭,早餐,¥,11,WECHAT,NONE,0,1,,1750000000000,老王包子,0
-        2026/10/23,收入,工资,"5,000.00",招商储蓄卡,EXT-1,十月工资,,¥,12,MANUAL,NONE,0,0,,1750000000000,,1
-        2026-10-22,支出,餐饮,100.00,招商信用卡,,退款,早餐,¥,13,ALIPAY,REFUNDED_EXPENSE,0,1,,1750000000000,,
+        时间,类型,分类,金额,资产账户,记录标识,备注,二级分类,币种,编号,来源,退款状态,退款待定,不扣资产,流水号,创建时间,商户,计入统计,退款关联
+        2026-10-24 12:03:00,支出,餐饮,25.00,招商信用卡,,午饭,早餐,¥,11,WECHAT,NONE,0,1,,1750000000000,老王包子,0,0
+        2026/10/23,收入,工资,"5,000.00",招商储蓄卡,EXT-1,十月工资,,¥,12,MANUAL,NONE,0,0,,1750000000000,,1,0
+        2026-10-22,支出,餐饮,100.00,招商信用卡,,退款,早餐,¥,13,ALIPAY,REFUNDED_EXPENSE,0,1,,1750000000000,,,0
     """.trimIndent()
 
     private fun parse(): BackupData {
@@ -125,5 +125,50 @@ class BackupCsvTest {
         val didi = data.merchantRules.first { it.matchKey == "滴滴出行" }
         assertEquals(1L, didi.categoryId)
         assertNull(didi.accountId)
+    }
+
+    @Test
+    fun `分期计划随 CSV 还原`() {
+        val text = sampleCsv() + "\n" + """
+            ##installments|分期计划
+            id,title,accountId,categoryId,totalPrincipalCents,totalInterestCents,periods,firstDate,postTime,deductAsset,excludeAssetPeriods,postedPeriods,note,countInStats,countInStatsPeriods
+            1,手机分期,2,1,600000,0,6,2026-01-10,09:00,1,,3,,1,1-3
+            2,免息分期,2,1,120000,0,3,2026-03-15,09:00,0,1-2,1,只记账,0,
+        """.trimIndent()
+        val data = BackupCsv.parseRows(CsvReader.parse(text))!!
+        assertEquals(2, data.installments.size)
+
+        val phone = data.installments.first { it.title == "手机分期" }
+        assertEquals(2L, phone.accountId)
+        assertEquals(1L, phone.categoryId)
+        assertEquals(600_000L, phone.totalPrincipalCents)
+        assertEquals(6, phone.periods)
+        assertEquals(3, phone.postedPeriods)
+        assertTrue(phone.deductAsset)
+        assertEquals("1-3", phone.countInStatsPeriods)
+
+        val interestFree = data.installments.first { it.title == "免息分期" }
+        assertFalse(interestFree.deductAsset)
+        assertEquals("1-2", interestFree.excludeAssetPeriods)
+        assertFalse(interestFree.countInStats)
+    }
+
+    @Test
+    fun `周期计划随 CSV 还原`() {
+        val text = sampleCsv() + "\n" + """
+            ##recurring|周期计划
+            id,title,type,amountCents,categoryId,accountId,frequency,intervalCount,firstDate,nextDate,postTime,deductAsset,autoPost,endMode,endCount,endDate,postedCount,excludeAssetPeriods,note,countInStats,countInStatsPeriods
+            1,房租,EXPENSE,300000,1,1,MONTHLY,1,2026-01-01,2026-11-01,09:00,1,0,NEVER,0,,11,,1,
+        """.trimIndent()
+        val data = BackupCsv.parseRows(CsvReader.parse(text))!!
+        assertEquals(1, data.recurring.size)
+
+        val rent = data.recurring.first()
+        assertEquals("房租", rent.title)
+        assertEquals(TxType.EXPENSE, rent.type)
+        assertEquals(300_000L, rent.amountCents)
+        assertEquals(11, rent.postedCount)
+        assertEquals("MONTHLY", rent.frequency)
+        assertTrue(rent.deductAsset)
     }
 }

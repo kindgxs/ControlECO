@@ -1644,6 +1644,81 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------- 退款关联：支出与退款收入按差额统计（修改2） ----------
+
+    /**
+     * 查找可与指定支出关联的退款收入候选（同一会计月度周期、未关联、时间晚于支出）。
+     * 按金额匹配度排序：等额 > 部分退款 > 超额退款。
+     */
+    suspend fun findRefundCandidates(expenseId: Long): List<TransactionRow> = withContext(Dispatchers.IO) {
+        val expense = txDao.getById(expenseId) ?: return@withContext emptyList()
+        if (expense.type != TxType.EXPENSE || expense.refundMark == RefundMark.REFUNDED_EXPENSE) {
+            return@withContext emptyList()
+        }
+        val period = MonthPeriod.of(RecurringMath.dateOf(expense.timestamp, zone), _monthStartDay.value)
+        val (start, end) = period.toMillisRange(zone)
+        txDao.findUnlinkedRefundsInRange(start, end)
+            .filter { it.timestamp >= expense.timestamp }
+            .sortedWith(
+                compareByDescending<TransactionRow> {
+                    when {
+                        it.amountCents == expense.amountCents -> 2
+                        it.amountCents < expense.amountCents -> 1
+                        else -> 0
+                    }
+                }.thenBy { kotlin.math.abs(it.amountCents - expense.amountCents) },
+            )
+    }
+
+    /**
+     * 将退款收入与原支出建立关联。关联后按差额统计：
+     * - 退款金额 ≤ 支出金额：支出只计差额，退款不计入收入；
+     * - 退款金额 > 支出金额：需要 [force] = true 确认，超出部分按收入统计。
+     *
+     * 若因超额需要用户确认，返回 "REFUND_OVER_EXPENSE"，UI 应弹二次确认。
+     */
+    fun linkRefund(refundId: Long, expenseId: Long, force: Boolean = false, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val refund = txDao.getById(refundId)
+                val expense = txDao.getById(expenseId)
+                val message = when {
+                    refund == null || refund.refundMark != RefundMark.REFUND_INCOME -> "请选择退款收入"
+                    expense == null || expense.type != TxType.EXPENSE -> "请选择支出账单"
+                    expense.refundMark == RefundMark.REFUNDED_EXPENSE -> "该支出已标记退款，不能重复关联"
+                    refund.refundLinkId > 0L && refund.refundLinkId != expenseId -> "该退款已关联其他支出"
+                    refund.refundLinkId == expenseId -> "已关联"
+                    refund.amountCents > expense.amountCents && !force -> "REFUND_OVER_EXPENSE"
+                    else -> null
+                }
+                if (message != null) {
+                    withContext(Dispatchers.Main) { onDone(message) }
+                    return@launch
+                }
+                txDao.linkRefund(refundId, expenseId)
+                AppLog.i("refund", "linked refund #$refundId to expense #$expenseId")
+                withContext(Dispatchers.Main) { onDone(null) }
+            } catch (e: Exception) {
+                AppLog.e("refund", "link refund failed", e)
+                withContext(Dispatchers.Main) { onDone("关联失败：${e.message ?: "未知错误"}") }
+            }
+        }
+    }
+
+    /** 解除退款收入与原支出的关联 */
+    fun unlinkRefund(refundId: Long, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                txDao.unlinkRefund(refundId)
+                AppLog.i("refund", "unlinked refund #$refundId")
+                withContext(Dispatchers.Main) { onDone(null) }
+            } catch (e: Exception) {
+                AppLog.e("refund", "unlink refund failed", e)
+                withContext(Dispatchers.Main) { onDone("解除关联失败：${e.message ?: "未知错误"}") }
+            }
+        }
+    }
+
     /** 系统无障碍设置中是否已开启采集服务 */
     fun isA11yEnabled(): Boolean = AccBookAccessibilityService.isEnabled(getApplication())
 

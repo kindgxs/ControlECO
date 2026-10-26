@@ -21,6 +21,10 @@ class DepositMathTest {
         cents: Long,
         date: LocalDate,
         refund: RefundMark = RefundMark.NONE,
+        countInStats: Boolean = true,
+        refundLinkId: Long = 0L,
+        linkedRefundCents: Long = 0L,
+        linkedExpenseCents: Long = 0L,
     ) = TransactionRow(
         id = 0,
         type = type,
@@ -34,6 +38,10 @@ class DepositMathTest {
         accountId = 1,
         accountName = "账户",
         refundMark = refund,
+        countInStats = countInStats,
+        refundLinkId = refundLinkId,
+        linkedRefundCents = linkedRefundCents,
+        linkedExpenseCents = linkedExpenseCents,
     )
 
     @Test
@@ -41,6 +49,12 @@ class DepositMathTest {
         assertEquals(0L, DepositMath.expenseCentsOf(row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 1), RefundMark.REFUNDED_EXPENSE)))
         assertEquals(10_000L, DepositMath.expenseCentsOf(row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 1))))
         assertEquals(0L, DepositMath.expenseCentsOf(row(TxType.INCOME, 10_000, LocalDate.of(2026, 10, 1))))
+    }
+
+    @Test
+    fun `不计入统计的收支不计入存款口径`() {
+        assertEquals(0L, DepositMath.expenseCentsOf(row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 1), countInStats = false)))
+        assertEquals(0L, DepositMath.incomeCentsOf(row(TxType.INCOME, 10_000, LocalDate.of(2026, 10, 1), countInStats = false)))
     }
 
     @Test
@@ -98,5 +112,27 @@ class DepositMathTest {
         val saving = DepositMath.MonthSaving(YearMonth.of(2026, 10), 100_000, 20_000)
         assertNull(saving.ratio(0L))
         assertEquals(1f, saving.ratio(80_000L)!!, 0.0001f)
+    }
+
+    @Test
+    fun `关联退款等额抵消_收支均不计入`() {
+        val expense = row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 1), linkedRefundCents = 10_000)
+        val refund = row(TxType.INCOME, 10_000, LocalDate.of(2026, 10, 2), RefundMark.REFUND_INCOME, refundLinkId = 1, linkedExpenseCents = 10_000)
+        assertEquals(0L, DepositMath.expenseCentsOf(expense))
+        assertEquals(0L, DepositMath.incomeCentsOf(refund))
+    }
+
+    @Test
+    fun `关联退款部分抵扣_只计差额`() {
+        val expense = row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 1), linkedRefundCents = 4_000)
+        assertEquals(6_000L, DepositMath.expenseCentsOf(expense))
+    }
+
+    @Test
+    fun `关联退款超额_支出为0_超出部分计入收入`() {
+        val expense = row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 1), linkedRefundCents = 12_000)
+        val refund = row(TxType.INCOME, 12_000, LocalDate.of(2026, 10, 2), RefundMark.REFUND_INCOME, refundLinkId = 1, linkedExpenseCents = 10_000)
+        assertEquals(0L, DepositMath.expenseCentsOf(expense))
+        assertEquals(2_000L, DepositMath.incomeCentsOf(refund))
     }
 }

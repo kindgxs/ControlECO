@@ -2,5 +2,5 @@
 <resources>
     <!-- 图标底色（与 ic_launcher_art 图案外圈的深绿一致）：图案本身已铺满背景层，
          这个色值留给"只取纯色底"的系统表面兜底 -->
-    <color name="ic_launcher_background">#077A41</color>
+    <color name="ic_launcher_background">#055335</color>
 </resources>

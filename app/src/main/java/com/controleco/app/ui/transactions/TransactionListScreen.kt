@@ -41,6 +41,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -221,6 +222,23 @@ fun TransactionListScreen(
     var selecting by remember { mutableStateOf(false) }
     var selected by remember { mutableStateOf(emptySet<Long>()) }
     var confirm by remember { mutableStateOf<DeleteConfirm?>(null) }
+    var linkSheetExpense by remember { mutableStateOf<TransactionRow?>(null) }
+    var confirmUnlink by remember { mutableStateOf<TransactionRow?>(null) }
+    val autoLinkPair: Pair<TransactionRow, TransactionRow>? by remember(rowsReady) {
+        val refunds = rowsReady.filter {
+            it.type == TxType.INCOME && it.refundMark == RefundMark.REFUND_INCOME &&
+                it.refundLinkId == 0L && it.countInStats
+        }
+        val expenses = rowsReady.filter {
+            it.type == TxType.EXPENSE && it.refundMark != RefundMark.REFUNDED_EXPENSE && it.countInStats
+        }
+        mutableStateOf(
+            refunds.firstNotNullOfOrNull { refund ->
+                expenses.find { it.amountCents == refund.amountCents && it.timestamp <= refund.timestamp }
+                    ?.let { refund to it }
+            },
+        )
+    }
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val listState = rememberLazyListState()
@@ -372,6 +390,19 @@ fun TransactionListScreen(
             onOpenImageSettings = { showCoverSheet = true },
             modifier = Modifier.padding(horizontal = 22.dp),
         )
+        val autoLink = autoLinkPair
+        if (autoLink != null) {
+            val (refund, expense) = autoLink
+            AutoLinkBanner(
+                refund = refund,
+                expense = expense,
+                onLink = {
+                    vm.linkRefund(refund.id, expense.id) { err ->
+                        if (err != null) EcoToast.show(err, EcoPillTone.Bad)
+                    }
+                },
+            )
+        }
         BillToolbar(
             month = month,
             mode = mode,
@@ -452,6 +483,8 @@ fun TransactionListScreen(
                                             selected = setOf(row.id)
                                         }
                                     },
+                                    onLinkRefund = { linkSheetExpense = row },
+                                    onUnlinkRefund = { confirmUnlink = row },
                                 )
                                 HorizontalDivider(
                                     color = MaterialTheme.eco.rule,
@@ -571,6 +604,31 @@ fun TransactionListScreen(
             confirmText = "删除",
             onConfirm = { confirm = null; c.onConfirm() },
             onDismiss = { confirm = null },
+            danger = true,
+        )
+    }
+
+    linkSheetExpense?.let { expense ->
+        LinkRefundSheet(
+            expense = expense,
+            vm = vm,
+            onDismiss = { linkSheetExpense = null },
+        )
+    }
+
+    confirmUnlink?.let { refund ->
+        EcoConfirm(
+            title = "解除退款关联",
+            body = "解除后这笔退款将按普通收入统计，原支出恢复全额计入支出。",
+            confirmText = "解除",
+            onConfirm = {
+                vm.unlinkRefund(refund.id) { err ->
+                    report(err)
+                    if (err == null) EcoToast.show("已解除关联", EcoPillTone.Good)
+                }
+                confirmUnlink = null
+            },
+            onDismiss = { confirmUnlink = null },
             danger = true,
         )
     }
@@ -988,6 +1046,8 @@ private fun BillRow(
     selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
+    onLinkRefund: () -> Unit,
+    onUnlinkRefund: () -> Unit,
 ) {
     val c = MaterialTheme.eco
     val isExpense = row.type == TxType.EXPENSE
@@ -1061,6 +1121,36 @@ private fun BillRow(
             }
         }
         Spacer(Modifier.width(8.dp))
+        if (isExpense && row.refundMark != RefundMark.REFUNDED_EXPENSE && row.linkedRefundCents < row.amountCents) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onLinkRefund)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    "关联",
+                    style = EcoType.Pill.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
+                    color = c.blue,
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+        }
+        if (!isExpense && row.refundLinkId > 0L) {
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .clickable(onClick = onUnlinkRefund)
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            ) {
+                Text(
+                    "已关联",
+                    style = EcoType.Pill.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
+                    color = c.jade,
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+        }
         Text(
             Money.formatSignedCurrency(if (isExpense) -row.amountCents else row.amountCents),
             style = EcoType.RowTitle.copy(fontSize = 13.5.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.3).sp),
@@ -1088,6 +1178,218 @@ private fun DayJumpDialog(current: LocalDate, onPick: (LocalDate) -> Unit, onDis
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     ) {
         DatePicker(state = state)
+    }
+}
+
+/**
+ * 退款关联选择弹窗：列出同月可关联的退款收入，点击后按差额口径关联。
+ * 退款金额超过原支出时需要二次确认。
+ */
+@Composable
+private fun LinkRefundSheet(
+    expense: TransactionRow,
+    vm: LedgerViewModel,
+    onDismiss: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    val scope = rememberCoroutineScope()
+    var candidates by remember { mutableStateOf(emptyList<TransactionRow>()) }
+    var loading by remember { mutableStateOf(true) }
+    var pendingForceLink by remember { mutableStateOf<TransactionRow?>(null) }
+
+    LaunchedEffect(expense.id) {
+        candidates = vm.findRefundCandidates(expense.id)
+        loading = false
+    }
+
+    EcoSheet(
+        onDismiss = onDismiss,
+        title = "关联退款",
+        subtitle = "将同月退款收入与原支出关联，按差额统计",
+    ) {
+        Column {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("原支出", style = EcoType.RowTitle.copy(fontSize = 12.sp), color = c.ink)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    Money.formatSignedCurrency(-expense.amountCents),
+                    style = EcoType.RowTitle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold),
+                    color = c.clay,
+                )
+            }
+            val expenseTexts = billRowText(expense.counterparty, expense.categoryName, "", expense.note)
+            Text(
+                expenseTexts.title,
+                style = EcoType.PageNote.copy(fontSize = 9.5.sp),
+                color = c.muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(12.dp))
+            HorizontalDivider(color = c.rule, thickness = 1.dp)
+            Spacer(Modifier.height(12.dp))
+
+            if (loading) {
+                Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                    Text("正在查找候选退款…", style = EcoType.PageNote, color = c.quiet)
+                }
+            } else if (candidates.isEmpty()) {
+                BillEmpty(
+                    title = "未找到可关联的退款",
+                    body = "同一个月度周期内，没有可关联的退款收入。",
+                    modifier = Modifier.fillMaxWidth().height(160.dp),
+                )
+            } else {
+                Text(
+                    "选择要关联的退款（共 ${candidates.size} 笔）",
+                    style = EcoType.PageNote.copy(fontSize = 9.sp),
+                    color = c.quiet,
+                )
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(
+                    modifier = Modifier.heightIn(max = 320.dp),
+                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    items(candidates, key = { it.id }) { refund ->
+                        RefundCandidateRow(
+                            refund = refund,
+                            expenseAmount = expense.amountCents,
+                            onClick = {
+                                vm.linkRefund(refund.id, expense.id) { err ->
+                                    when {
+                                        err == "REFUND_OVER_EXPENSE" -> pendingForceLink = refund
+                                        err != null -> EcoToast.show(err, EcoPillTone.Bad)
+                                        else -> {
+                                            EcoToast.show("已关联退款", EcoPillTone.Good)
+                                            onDismiss()
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    pendingForceLink?.let { refund ->
+        val diff = refund.amountCents - expense.amountCents
+        EcoConfirm(
+            title = "退款金额大于付款",
+            body = "该退款 ${Money.formatSignedCurrency(refund.amountCents).removePrefix("+")} 超过原支出 ${Money.formatSignedCurrency(expense.amountCents).removePrefix("+")}，超出 ${Money.formatSignedCurrency(diff).removePrefix("+")} 将计入收入。请确认是否正确。",
+            confirmText = "确认关联",
+            onConfirm = {
+                vm.linkRefund(refund.id, expense.id, force = true) { err ->
+                    if (err != null) {
+                        EcoToast.show(err, EcoPillTone.Bad)
+                    } else {
+                        EcoToast.show("已关联退款", EcoPillTone.Good)
+                        onDismiss()
+                    }
+                }
+                pendingForceLink = null
+            },
+            onDismiss = { pendingForceLink = null },
+        )
+    }
+}
+
+@Composable
+private fun AutoLinkBanner(refund: TransactionRow, expense: TransactionRow, onLink: () -> Unit) {
+    val c = MaterialTheme.eco
+    val merchant = expense.counterparty.ifBlank { expense.categoryName }
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 22.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(c.blueWash)
+            .border(1.dp, c.rule, RoundedCornerShape(12.dp))
+            .clickable(onClick = onLink)
+            .padding(horizontal = 14.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                "发现可自动关联的退款",
+                style = EcoType.RowTitle.copy(fontSize = 12.sp),
+                color = c.ink,
+            )
+            Text(
+                "${merchant} 支出 ${Money.formatSignedCurrency(-expense.amountCents)} · 退款 ${Money.formatSignedCurrency(refund.amountCents)}，金额一致可抵消",
+                style = EcoType.PageNote.copy(fontSize = 9.sp),
+                color = c.muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Text(
+            "一键关联",
+            style = EcoType.Pill.copy(fontSize = 10.sp, fontWeight = FontWeight.Bold),
+            color = c.blue,
+        )
+    }
+}
+
+@Composable
+private fun RefundCandidateRow(
+    refund: TransactionRow,
+    expenseAmount: Long,
+    onClick: () -> Unit,
+) {
+    val c = MaterialTheme.eco
+    val time = remember(refund.timestamp) {
+        Instant.ofEpochMilli(refund.timestamp).atZone(ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern("MM-dd HH:mm"))
+    }
+    val diff = refund.amountCents - expenseAmount
+    val diffAbsCurrency = Money.formatSignedCurrency(kotlin.math.abs(diff)).removePrefix("+")
+    val diffText = when {
+        diff == 0L -> "金额一致，收支互相抵消"
+        diff < 0L -> "差额 $diffAbsCurrency 计入支出"
+        else -> "超出 $diffAbsCurrency 计入收入"
+    }
+    val diffColor = when {
+        diff == 0L -> c.jade
+        diff < 0L -> c.clay
+        else -> c.amber
+    }
+    val texts = billRowText(refund.counterparty, refund.categoryName, time, refund.note)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp, horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(
+                texts.title,
+                style = EcoType.RowTitle.copy(fontSize = 12.sp),
+                color = c.ink,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                texts.subLine1,
+                style = EcoType.PageNote.copy(fontSize = 9.sp),
+                color = c.muted,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                diffText,
+                style = EcoType.Pill.copy(fontSize = 8.5.sp, fontWeight = FontWeight.Bold),
+                color = diffColor,
+            )
+        }
+        Text(
+            Money.formatSignedCurrency(refund.amountCents),
+            style = EcoType.RowTitle.copy(fontSize = 13.sp, fontWeight = FontWeight.Bold),
+            color = c.jade,
+        )
     }
 }
 

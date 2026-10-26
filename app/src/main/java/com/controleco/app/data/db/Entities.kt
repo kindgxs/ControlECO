@@ -128,6 +128,13 @@ data class TransactionEntity(
      */
     @ColumnInfo(defaultValue = "1")
     val countInStats: Boolean = true,
+    /**
+     * 退款关联：退款收入行指向被退款的原支出 id（> 0）。
+     * 关联后付款与退款按差额统计：金额一致时互相抵消；退款不足时只计差额；
+     * 退款超额时超额部分计入收入。
+     */
+    @ColumnInfo(defaultValue = "0")
+    val refundLinkId: Long = 0L,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
