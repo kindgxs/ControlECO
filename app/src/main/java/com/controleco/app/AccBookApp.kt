@@ -7,6 +7,7 @@ import com.controleco.app.data.db.DefaultData
 import com.controleco.app.util.AppLog
 import com.controleco.app.ui.theme.AccentThemeStore
 import com.controleco.app.ui.common.AnimationPrefs
+import com.controleco.app.ui.common.AppIconManager
 import com.controleco.app.ui.transactions.CoverStyleStore
 import com.controleco.app.util.Money
 import kotlinx.coroutines.CoroutineScope
@@ -31,6 +32,7 @@ class AccBookApp : Application() {
         AccentThemeStore.init(this)
         CoverStyleStore.init(this)
         AnimationPrefs.init(this)
+        AppIconManager.init(this)
         CaptureCenter.init(this)
         // 覆盖安装后提示复查通知使用权（广播可能被系统吞掉，冷启动再兜一次）
         CaptureCenter.checkAppUpdated(BuildConfig.VERSION_CODE)

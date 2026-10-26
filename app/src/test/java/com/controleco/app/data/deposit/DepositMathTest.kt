@@ -37,10 +37,14 @@ class DepositMathTest {
     )
 
     @Test
-    fun `已退款的支出不计入存款口径`() {
+    fun `已退款或不计入统计的支出不计入存款口径`() {
         assertEquals(0L, DepositMath.expenseCentsOf(row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 1), RefundMark.REFUNDED_EXPENSE)))
         assertEquals(10_000L, DepositMath.expenseCentsOf(row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 1))))
         assertEquals(0L, DepositMath.expenseCentsOf(row(TxType.INCOME, 10_000, LocalDate.of(2026, 10, 1))))
+        val excluded = row(TxType.EXPENSE, 10_000, LocalDate.of(2026, 10, 1)).copy(countInStats = false)
+        assertEquals(0L, DepositMath.expenseCentsOf(excluded))
+        val excludedIncome = row(TxType.INCOME, 10_000, LocalDate.of(2026, 10, 1)).copy(countInStats = false)
+        assertEquals(0L, DepositMath.incomeCentsOf(excludedIncome))
     }
 
     @Test

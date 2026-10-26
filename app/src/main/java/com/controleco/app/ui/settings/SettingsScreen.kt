@@ -45,6 +45,7 @@ import com.controleco.app.BuildConfig
 import com.controleco.app.capture.CaptureAppCatalog
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.ui.common.AnimationPrefs
+import com.controleco.app.ui.common.AppIconManager
 import com.controleco.app.ui.common.EcoIcons
 import com.controleco.app.ui.common.SettingsDivider
 import com.controleco.app.ui.common.SettingsPage
@@ -129,6 +130,7 @@ fun SettingsScreen(
     var showModeOrder by remember { mutableStateOf(false) }
     var showDepositStart by remember { mutableStateOf(false) }
     var depositStartDraft by remember { mutableStateOf(YearMonth.now()) }
+    var showIconPicker by remember { mutableStateOf(false) }
 
     val listenerGranted = remember(resumeTick) { vm.isListenerGranted() }
     val a11yGranted = remember(resumeTick) { vm.isA11yEnabled() }
@@ -267,6 +269,17 @@ fun SettingsScreen(
                 checked = false,
                 enabled = false,
                 onCheckedChange = {},
+            )
+            SettingsDivider()
+            // 桌面图标：多套背景色可选，切换后系统桌面会刷新
+            SettingsRow(
+                title = "桌面图标",
+                subtitle = "更换应用启动图标颜色",
+                icon = EcoIcons.Home,
+                iconTint = MaterialTheme.eco.jade,
+                trail = AppIconManager.current.label,
+                showChevron = true,
+                onClick = { showIconPicker = true },
             )
             SettingsDivider()
             SettingsRow(
@@ -414,6 +427,66 @@ fun SettingsScreen(
             }
         }
     }
+
+    if (showIconPicker) {
+        EcoSheet(
+            onDismiss = { showIconPicker = false },
+            title = "桌面图标",
+            subtitle = "切换后请稍等，系统桌面会自动刷新",
+        ) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 6.dp)) {
+                AppIconManager.Style.entries.forEach { style ->
+                    val selected = AppIconManager.current == style
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(MaterialTheme.eco.surface2)
+                            .clickable {
+                                AppIconManager.set(context, style)
+                                showIconPicker = false
+                                EcoToast.show("已切换为 ${style.label}")
+                            }
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Box(
+                            Modifier
+                                .size(40.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(appIconColor(style)),
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Text(
+                            style.label,
+                            style = EcoType.RowTitle,
+                            color = MaterialTheme.eco.ink,
+                            modifier = Modifier.weight(1f),
+                        )
+                        if (selected) {
+                            Text(
+                                "当前",
+                                style = EcoType.Micro.copy(fontWeight = FontWeight.Bold),
+                                color = MaterialTheme.eco.blue,
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+    }
+}
+
+/** 图标样式对应的预览色 */
+private fun appIconColor(style: AppIconManager.Style): Color = when (style) {
+    AppIconManager.Style.DEFAULT -> Color(0xFF077A41)
+    AppIconManager.Style.BLUE -> Color(0xFF1E6FEB)
+    AppIconManager.Style.AMBER -> Color(0xFFF59E0B)
+    AppIconManager.Style.RED -> Color(0xFFDC2626)
+    AppIconManager.Style.DARK -> Color(0xFF1F2937)
+    AppIconManager.Style.PURPLE -> Color(0xFF7C3AED)
 }
 
 /** 首页页面 id → 中文名 */

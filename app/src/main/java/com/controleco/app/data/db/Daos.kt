@@ -292,7 +292,7 @@ interface TransactionDao {
     )
     suspend fun recentExpenseCandidates(): List<TransactionRow>
 
-    /** 近期退款收入候选（人工关联支出时用） */
+    /** 近期退款收入候选（人工关联支出时用）：所有未关联的收入都可以被选为退款 */
     @Query(
         """SELECT t.id AS id, t.type AS type, t.amountCents AS amountCents, t.timestamp AS timestamp,
            t.note AS note, t.counterparty AS counterparty, t.source AS source,
@@ -304,8 +304,7 @@ interface TransactionDao {
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
-           WHERE t.type = 'INCOME' AND t.refundMark = 'REFUND_INCOME'
-             AND t.refundLinkId IS NULL
+           WHERE t.type = 'INCOME' AND t.refundLinkId IS NULL
            ORDER BY t.timestamp DESC LIMIT 100"""
     )
     suspend fun recentRefundIncomeCandidates(): List<TransactionRow>

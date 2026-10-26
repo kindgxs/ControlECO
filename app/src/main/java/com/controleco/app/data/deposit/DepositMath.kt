@@ -29,14 +29,15 @@ object DepositMath {
             if (goalCents <= 0L) null else savingCents.toFloat() / goalCents
     }
 
-    /** 单笔可计入支出的金额（已退款支出 = 0；已配对的支出/退款不在此处理，交给 [linkedNetCents]） */
+    /** 单笔可计入支出的金额（不计入统计 / 已退款 / 已配对 都排除） */
     fun expenseCentsOf(row: TransactionRow): Long =
-        if (row.type == TxType.EXPENSE && row.refundMark != RefundMark.REFUNDED_EXPENSE
+        if (row.type == TxType.EXPENSE && row.countInStats
+            && row.refundMark != RefundMark.REFUNDED_EXPENSE
             && row.refundLinkId == null
         ) row.amountCents else 0L
 
     fun incomeCentsOf(row: TransactionRow): Long =
-        if (row.type == TxType.INCOME && row.refundLinkId == null) row.amountCents else 0L
+        if (row.type == TxType.INCOME && row.countInStats && row.refundLinkId == null) row.amountCents else 0L
 
     /**
      * 已配对账单的净额：支出金额 − 退款金额。
