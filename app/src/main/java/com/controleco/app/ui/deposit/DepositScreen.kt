@@ -375,7 +375,7 @@ fun DepositScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(3, 6, 12, 24, 36).forEach { n ->
+                    listOf(3, 6, 9, 12, 18, 24, 36, 48, 60).forEach { n ->
                         EcoChip(
                             text = "$n",
                             selected = rangeDraft == n,

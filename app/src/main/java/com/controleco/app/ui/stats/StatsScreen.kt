@@ -388,22 +388,23 @@ fun StatsScreen(vm: LedgerViewModel, scrollToTopTick: Int = 0) {
             val savingNow = currentSaving
             val trendNow = depositTrend
             if (savingNow != null && trendNow != null) {
-                item(key = "savingsHead") {
-                    EcoSectionHead(
-                        title = "存款分析",
-                        aside = "SAVINGS",
-                        modifier = Modifier.padding(horizontal = 22.dp),
-                    )
-                }
-                item(key = "savings") {
-                    SavingsCard(
-                        current = savingNow,
-                        trend = trendNow,
-                        goalCents = depositGoal,
-                        style = savingsStyle,
-                        onStyleChange = { savingsStyle = it },
-                        onOpenRange = { showSavingsRange = true },
-                    )
+                // 存款分析（含趋势图）吸顶：向上滚动时图表常驻，「每月存款」明细在下方滚动隐藏
+                stickyHeader(key = "savingsSticky") {
+                    Column(Modifier.fillMaxWidth().background(c.paper)) {
+                        EcoSectionHead(
+                            title = "存款分析",
+                            aside = "SAVINGS",
+                            modifier = Modifier.padding(horizontal = 22.dp),
+                        )
+                        SavingsCard(
+                            current = savingNow,
+                            trend = trendNow,
+                            goalCents = depositGoal,
+                            style = savingsStyle,
+                            onStyleChange = { savingsStyle = it },
+                            onOpenRange = { showSavingsRange = true },
+                        )
+                    }
                 }
                 // 逐月明细与趋势图同层级的两块内容，和「每日支出 / 分类预算与占比」的层次一致
                 item(key = "savingsListHead") {
@@ -1337,7 +1338,7 @@ private fun SavingsChart(trend: List<DepositMath.MonthSaving>, style: TrendChart
     Canvas(
         Modifier
             .fillMaxWidth()
-            .height(84.dp),
+            .height(132.dp),
     ) {
         val count = values.size
         val midY = size.height / 2f
@@ -1466,7 +1467,7 @@ private fun SavingsRangeSheet(
                     )
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf(3, 6, 12, 24, 36).forEach { n ->
+                        listOf(3, 6, 9, 12, 18, 24, 36, 48, 60).forEach { n ->
                             EcoChip(
                                 text = "$n 个月",
                                 selected = months == n,

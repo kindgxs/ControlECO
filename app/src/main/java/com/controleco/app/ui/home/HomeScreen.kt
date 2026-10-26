@@ -235,6 +235,7 @@ fun HomeScreen(
 
     // ---------- 预算页：回看月份/日期 ----------
     var showBudgetCalendar by remember { mutableStateOf(false) }
+    var showMonthPicker by remember { mutableStateOf(false) }
     val viewDate = homeViewDate ?: today
     val viewingToday = homeViewDate == null || homeViewDate == today
     val viewMonth = remember(viewPeriod.start.year, viewPeriod.start.monthValue) { YearMonth.from(viewPeriod.start) }
@@ -391,19 +392,32 @@ fun HomeScreen(
             low = modeLow,
             titleLeading = if (currentMode == MODE_BUDGET) {
                 {
-                    // 预算日历入口：月历里能看到每月预算与每月支出，并可选具体日期
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(9.dp))
-                            .ecoPressable(onClick = { showBudgetCalendar = true })
-                            .padding(4.dp),
-                    ) {
-                        Icon(
-                            EcoIcons.Calendar,
-                            contentDescription = "预算日历",
-                            tint = c.blue,
-                            modifier = Modifier.size(17.dp),
+                    // 预算页顶栏：在日历图标前显示当前查看的年月，点击可快捷切换月份
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "${viewMonth.year}.${viewMonth.monthValue}",
+                            style = EcoType.PageNote.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                            color = c.ink,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .ecoPressable(onClick = { showMonthPicker = true })
+                                .padding(horizontal = 2.dp, vertical = 1.dp),
                         )
+                        Spacer(Modifier.width(4.dp))
+                        // 预算日历入口：月历里能看到每月预算与每月支出，并可选具体日期
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(9.dp))
+                                .ecoPressable(onClick = { showBudgetCalendar = true })
+                                .padding(4.dp),
+                        ) {
+                            Icon(
+                                EcoIcons.Calendar,
+                                contentDescription = "预算日历",
+                                tint = c.blue,
+                                modifier = Modifier.size(17.dp),
+                            )
+                        }
                     }
                 }
             } else {
@@ -537,6 +551,23 @@ fun HomeScreen(
                 vm.setHomeBudgetDate(null)
             },
             onDismiss = { showBudgetCalendar = false },
+        )
+    }
+
+    // 顶栏年月快捷切换：选月份后把预算页视图切到该月（保留原日号）
+    if (showMonthPicker) {
+        PeriodPickerSheet(
+            mode = PeriodMode.MONTH,
+            current = viewMonth,
+            onSelectMonth = { ym ->
+                showMonthPicker = false
+                vm.setHomeBudgetDate(dateInMonth(viewDate, ym))
+            },
+            onSelectYear = { y ->
+                showMonthPicker = false
+                vm.setHomeBudgetDate(dateInMonth(viewDate, viewMonth.withYear(y)))
+            },
+            onDismiss = { showMonthPicker = false },
         )
     }
 }

@@ -1,5 +1,6 @@
 package com.controleco.app.ui.budget
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -23,15 +24,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.LedgerViewModel
+import com.controleco.app.data.PeriodMode
 import com.controleco.app.data.budget.Budget
 import com.controleco.app.data.budget.MonthBudgetPlan
 import com.controleco.app.data.budget.MonthPeriod
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.common.EcoIcons
+import com.controleco.app.ui.common.PeriodPickerSheet
 import com.controleco.app.ui.eco.EcoEmpty
 import com.controleco.app.ui.eco.EcoGhostButton
 import com.controleco.app.ui.eco.EcoIconButton
@@ -65,6 +70,7 @@ fun MonthBudgetScreen(vm: LedgerViewModel, onBack: () -> Unit) {
 
     val today = remember { LocalDate.now() }
     var month by remember { mutableStateOf(YearMonth.from(today)) }
+    var showPicker by remember { mutableStateOf(false) }
     val plan = plans[month]
     val expenseTop = remember(categories) {
         categories.filter { it.type == TxType.EXPENSE && it.parentId == null }
@@ -74,9 +80,21 @@ fun MonthBudgetScreen(vm: LedgerViewModel, onBack: () -> Unit) {
 
     Column(Modifier.fillMaxSize()) {
         EcoTopBar(
-            micro = "MONTH BUDGET / ${month.year}",
+            micro = "MONTH BUDGET / ${month.year}.${month.monthValue}",
             title = "按月预算",
             onBack = onBack,
+            titleLeading = {
+                // 标题旁的年月快捷入口：点开可选任意年/月查看该月预算
+                Text(
+                    "${month.year}年${month.monthValue}月",
+                    style = EcoType.PageNote.copy(fontSize = 11.sp, fontWeight = FontWeight.SemiBold),
+                    color = MaterialTheme.eco.blueDeep,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickable { showPicker = true }
+                        .padding(horizontal = 2.dp, vertical = 1.dp),
+                )
+            },
             action = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     EcoIconButton(
@@ -109,6 +127,17 @@ fun MonthBudgetScreen(vm: LedgerViewModel, onBack: () -> Unit) {
                 days = MonthPeriod.of(today, monthStartDay).days,
             )
         }
+    }
+
+    // 年/月快捷选择器：选完直接切到该月预算
+    if (showPicker) {
+        PeriodPickerSheet(
+            mode = PeriodMode.MONTH,
+            current = month,
+            onSelectMonth = { month = it },
+            onSelectYear = { month = month.withYear(it) },
+            onDismiss = { showPicker = false },
+        )
     }
 }
 

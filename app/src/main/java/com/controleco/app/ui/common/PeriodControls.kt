@@ -38,6 +38,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -320,6 +321,8 @@ fun PeriodPickerSheet(
         )
     }
     val monthMode = mode == PeriodMode.MONTH
+    // 月模式下，点标题里的年份可临时切到「选年」网格，选完回到月份网格（不关闭面板）
+    var yearPicking by remember { mutableStateOf(false) }
 
     EcoSheet(
         onDismiss = onDismiss,
@@ -344,7 +347,15 @@ fun PeriodPickerSheet(
                 if (monthMode) "$year 年" else "$yearPageStart – ${(yearPageStart + YEARS_PER_PAGE - 1).coerceAtMost(PICKER_YEAR_MAX)}",
                 style = EcoType.SubTitle.copy(fontSize = 20.sp),
                 color = c.ink,
-                modifier = Modifier.weight(1f),
+                modifier = Modifier
+                    .weight(1f)
+                    .then(
+                        if (monthMode) {
+                            Modifier.clickable { yearPicking = true }
+                        } else {
+                            Modifier
+                        },
+                    ),
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.width(8.dp))
@@ -364,15 +375,28 @@ fun PeriodPickerSheet(
         Spacer(Modifier.height(6.dp))
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             EcoTextAction(
-                text = if (monthMode) "回到本月" else "回到今年",
+                text = when {
+                    monthMode && yearPicking -> "返回月份"
+                    monthMode -> "回到本月"
+                    else -> "回到今年"
+                },
                 onClick = {
-                    if (monthMode) onSelectMonth(currentMonth) else onSelectYear(currentYear)
-                    onDismiss()
+                    when {
+                        monthMode && yearPicking -> yearPicking = false
+                        monthMode -> {
+                            onSelectMonth(currentMonth)
+                            onDismiss()
+                        }
+                        else -> {
+                            onSelectYear(currentYear)
+                            onDismiss()
+                        }
+                    }
                 },
             )
         }
         Spacer(Modifier.height(10.dp))
-        if (monthMode) {
+        if (monthMode && !yearPicking) {
             repeat(4) { row ->
                 Row(
                     Modifier.fillMaxWidth().padding(bottom = 9.dp),
@@ -414,6 +438,8 @@ fun PeriodPickerSheet(
             }
         } else {
             val years = (0 until YEARS_PER_PAGE).map { yearPageStart + it }
+            // 月模式下临时选年：高亮当前查看年，点选后回到月份网格；年模式直接回调年份
+            val pickingYearInMonth = monthMode && yearPicking
             repeat(4) { row ->
                 Row(
                     Modifier.fillMaxWidth().padding(bottom = 9.dp),
@@ -421,7 +447,7 @@ fun PeriodPickerSheet(
                 ) {
                     repeat(3) { col ->
                         val y = years[row * 3 + col]
-                        val selected = y == current.year
+                        val selected = if (pickingYearInMonth) y == year else y == current.year
                         val highlighted = y == currentYear
                         Box(
                             Modifier
@@ -434,8 +460,13 @@ fun PeriodPickerSheet(
                                     else Modifier,
                                 )
                                 .clickable(enabled = y <= PICKER_YEAR_MAX) {
-                                    onSelectYear(y)
-                                    onDismiss()
+                                    if (pickingYearInMonth) {
+                                        year = y
+                                        yearPicking = false
+                                    } else {
+                                        onSelectYear(y)
+                                        onDismiss()
+                                    }
                                 },
                             contentAlignment = Alignment.Center,
                         ) {
