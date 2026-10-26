@@ -29,12 +29,28 @@ object DepositMath {
             if (goalCents <= 0L) null else savingCents.toFloat() / goalCents
     }
 
-    /** 单笔可计入支出的金额（已退款支出 = 0） */
+    /** 单笔可计入支出的金额（已退款支出 = 0；已配对的支出/退款不在此处理，交给 [linkedNetCents]） */
     fun expenseCentsOf(row: TransactionRow): Long =
-        if (row.type == TxType.EXPENSE && row.refundMark != RefundMark.REFUNDED_EXPENSE) row.amountCents else 0L
+        if (row.type == TxType.EXPENSE && row.refundMark != RefundMark.REFUNDED_EXPENSE
+            && row.refundLinkId == null
+        ) row.amountCents else 0L
 
     fun incomeCentsOf(row: TransactionRow): Long =
-        if (row.type == TxType.INCOME) row.amountCents else 0L
+        if (row.type == TxType.INCOME && row.refundLinkId == null) row.amountCents else 0L
+
+    /**
+     * 已配对账单的净额：支出金额 − 退款金额。
+     * - 正数 → 计入支出（退款少于付款，只统计差额）；
+     * - 零 → 两笔相抵，不影响收支；
+     * - 负数 → 计入收入（退款多于付款）。
+     * 同一 refundLinkId 若有多条，支出与退款分别求和后再相减。
+     */
+    fun linkedNetCents(rows: List<TransactionRow>, linkId: Long): Long {
+        val group = rows.filter { it.refundLinkId == linkId }
+        val expense = group.filter { it.type == TxType.EXPENSE }.sumOf { it.amountCents }
+        val refund = group.filter { it.type == TxType.INCOME }.sumOf { it.amountCents }
+        return expense - refund
+    }
 
     /** 按自然月汇总（用于存款趋势；未做年份过滤，调用方传多少算多少） */
     fun monthlySavings(
@@ -49,6 +65,19 @@ object DepositMath {
             val acc = buckets.getOrPut(month) { LongArray(2) }
             acc[0] += incomeCentsOf(row)
             acc[1] += expenseCentsOf(row)
+        }
+        // 已配对账单按净额叠加：净额归到「支出」所在月（退款跨月时仍以支出月为准）
+        rows.mapNotNull { it.refundLinkId }.distinct().forEach { linkId ->
+            val group = rows.filter { it.refundLinkId == linkId }
+            val expenseRow = group.firstOrNull { it.type == TxType.EXPENSE }
+            val net = linkedNetCents(rows, linkId)
+            val month = expenseRow?.let {
+                YearMonth.from(java.time.Instant.ofEpochMilli(it.timestamp).atZone(zone).toLocalDate())
+            } ?: group.firstOrNull()?.let {
+                YearMonth.from(java.time.Instant.ofEpochMilli(it.timestamp).atZone(zone).toLocalDate())
+            } ?: return@forEach
+            val acc = buckets.getOrPut(month) { LongArray(2) }
+            if (net >= 0L) acc[1] += net else acc[0] += -net
         }
         return buckets.entries
             .sortedBy { it.key }
@@ -65,6 +94,15 @@ object DepositMath {
             if (row.timestamp in a until b) {
                 income += incomeCentsOf(row)
                 expense += expenseCentsOf(row)
+            }
+        }
+        // 已配对账单按净额叠加（只算支出落在本区间的配对）
+        rows.mapNotNull { it.refundLinkId }.distinct().forEach { linkId ->
+            val group = rows.filter { it.refundLinkId == linkId }
+            val expenseRow = group.firstOrNull { it.type == TxType.EXPENSE }
+            if (expenseRow != null && expenseRow.timestamp in a until b) {
+                val net = linkedNetCents(rows, linkId)
+                if (net >= 0L) expense += net else income += -net
             }
         }
         return MonthSaving(YearMonth.from(start), income, expense)

@@ -30,6 +30,8 @@ data class TransactionRow(
      * 不计入收支合计 / 分类统计 / 预算 / 存款等所有统计。
      */
     val countInStats: Boolean = true,
+    /** 退款关联 ID：非空表示该笔已与另一笔（支出↔退款收入）配对，按净额统计 */
+    val refundLinkId: Long? = null,
     /** 入库时间：待确认列表把捕获条目与退款条目按这个排（而不是业务时间） */
     val createdAt: Long = 0,
 )
@@ -65,7 +67,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
-           t.countInStats AS countInStats,
+           t.countInStats AS countInStats, t.refundLinkId AS refundLinkId,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
@@ -82,7 +84,7 @@ interface TransactionDao {
     @Query(
         """SELECT type AS type, SUM(amountCents) AS totalCents FROM transactions
            WHERE timestamp >= :startMillis AND timestamp < :endMillis
-             AND countInStats = 1
+             AND countInStats = 1 AND refundLinkId IS NULL
            GROUP BY type"""
     )
     fun observeTypeTotals(startMillis: Long, endMillis: Long): Flow<List<TypeTotalRow>>
@@ -93,17 +95,19 @@ interface TransactionDao {
      * 退款收入只作为收入存在，**不再从支出里相减**——退款是成对的记录：
      * 原支出被标「已退款」后直接不计入支出，退款那笔照常计入收入。
      * 首页「本月支出」与统计页「分类预算与占比」的实际支出都用这一条口径。
+     *
+     * 已通过 refundLinkId 配对的支出 / 退款不在此统计（配对按净额由调用方另行叠加）。
      */
     @Query(
         """SELECT COALESCE(SUM(amountCents), 0) FROM transactions
            WHERE timestamp >= :startMillis AND timestamp < :endMillis
              AND type = 'EXPENSE' AND refundMark != 'REFUNDED_EXPENSE'
-             AND countInStats = 1"""
+             AND countInStats = 1 AND refundLinkId IS NULL"""
     )
     fun observeSpendingTotal(startMillis: Long, endMillis: Long): Flow<Long>
 
     /**
-     * 本期分类支出：同一口径按分类分组（排除已退款的支出）。
+     * 本期分类支出：同一口径按分类分组（排除已退款的支出与已配对的支出）。
      * 各分类之和恒等于 [observeSpendingTotal]，圆环与清单不会互相对不上。
      */
     @Query(
@@ -111,11 +115,21 @@ interface TransactionDao {
            FROM transactions t JOIN categories c ON t.categoryId = c.id
            WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
              AND t.type = 'EXPENSE' AND t.refundMark != 'REFUNDED_EXPENSE'
-             AND t.countInStats = 1
+             AND t.countInStats = 1 AND t.refundLinkId IS NULL
            GROUP BY c.id, c.name
            ORDER BY totalCents DESC"""
     )
     fun observeSpendingCategorySums(startMillis: Long, endMillis: Long): Flow<List<CategorySumRow>>
+
+    /**
+     * 本期收入合计：排除已配对的退款收入（配对按净额由调用方另行叠加）。
+     */
+    @Query(
+        """SELECT COALESCE(SUM(amountCents), 0) FROM transactions
+           WHERE timestamp >= :startMillis AND timestamp < :endMillis
+             AND type = 'INCOME' AND countInStats = 1 AND refundLinkId IS NULL"""
+    )
+    fun observeIncomeTotal(startMillis: Long, endMillis: Long): Flow<Long>
 
     @Query(
         """SELECT a.id AS accountId, a.initialBalanceCents AS initialBalanceCents,
@@ -201,12 +215,13 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
-           t.countInStats AS countInStats,
+           t.countInStats AS countInStats, t.refundLinkId AS refundLinkId,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
-           WHERE t.type = 'EXPENSE' AND t.refundMark = 'NONE' AND t.timestamp >= :since
+           WHERE t.type = 'EXPENSE' AND t.refundMark = 'NONE'
+             AND t.refundLinkId IS NULL AND t.timestamp >= :since
            ORDER BY t.timestamp DESC LIMIT 50"""
     )
     suspend fun recentUnrefundedExpenses(since: Long): List<TransactionRow>
@@ -223,7 +238,7 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
-           t.countInStats AS countInStats,
+           t.countInStats AS countInStats, t.refundLinkId AS refundLinkId,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
@@ -247,16 +262,53 @@ interface TransactionDao {
            c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
            a.id AS accountId, a.name AS accountName,
            t.refundMark AS refundMark, t.refundPending AS refundPending,
-           t.countInStats AS countInStats,
+           t.countInStats AS countInStats, t.refundLinkId AS refundLinkId,
            t.createdAt AS createdAt
            FROM transactions t
            JOIN categories c ON t.categoryId = c.id
            JOIN accounts a ON t.accountId = a.id
            WHERE t.type = 'EXPENSE' AND t.amountCents = :amountCents
              AND t.refundMark != 'REFUNDED_EXPENSE'
+             AND t.refundLinkId IS NULL
            ORDER BY t.timestamp DESC LIMIT 50"""
     )
     suspend fun expenseCandidatesByAmount(amountCents: Long): List<TransactionRow>
+
+    /** 同账户、同月内的支出候选（金额接近即可，用于部分退款的人工关联） */
+    @Query(
+        """SELECT t.id AS id, t.type AS type, t.amountCents AS amountCents, t.timestamp AS timestamp,
+           t.note AS note, t.counterparty AS counterparty, t.source AS source,
+           c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
+           a.id AS accountId, a.name AS accountName,
+           t.refundMark AS refundMark, t.refundPending AS refundPending,
+           t.countInStats AS countInStats, t.refundLinkId AS refundLinkId,
+           t.createdAt AS createdAt
+           FROM transactions t
+           JOIN categories c ON t.categoryId = c.id
+           JOIN accounts a ON t.accountId = a.id
+           WHERE t.type = 'EXPENSE' AND t.refundMark != 'REFUNDED_EXPENSE'
+             AND t.refundLinkId IS NULL
+           ORDER BY t.timestamp DESC LIMIT 100"""
+    )
+    suspend fun recentExpenseCandidates(): List<TransactionRow>
+
+    /** 近期退款收入候选（人工关联支出时用） */
+    @Query(
+        """SELECT t.id AS id, t.type AS type, t.amountCents AS amountCents, t.timestamp AS timestamp,
+           t.note AS note, t.counterparty AS counterparty, t.source AS source,
+           c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
+           a.id AS accountId, a.name AS accountName,
+           t.refundMark AS refundMark, t.refundPending AS refundPending,
+           t.countInStats AS countInStats, t.refundLinkId AS refundLinkId,
+           t.createdAt AS createdAt
+           FROM transactions t
+           JOIN categories c ON t.categoryId = c.id
+           JOIN accounts a ON t.accountId = a.id
+           WHERE t.type = 'INCOME' AND t.refundMark = 'REFUND_INCOME'
+             AND t.refundLinkId IS NULL
+           ORDER BY t.timestamp DESC LIMIT 100"""
+    )
+    suspend fun recentRefundIncomeCandidates(): List<TransactionRow>
 
     /** 把退款标成「已处理」（只对还没处理的退款生效，重复点击/并发不会覆盖） */
     @Query("UPDATE transactions SET refundPending = 0 WHERE id = :refundId AND refundPending = 1")
@@ -268,6 +320,39 @@ interface TransactionDao {
      */
     @Query("UPDATE transactions SET refundMark = 'REFUNDED_EXPENSE' WHERE id = :expenseId AND refundMark = 'NONE'")
     suspend fun markExpenseRefunded(expenseId: Long)
+
+    /**
+     * 支出与退款收入配对：两笔都写上同一个 refundLinkId（用支出 id 作为关联键）。
+     * 配对后 SQL 统计会排除这两笔，净额由调用方按「支出 − 退款」叠加。
+     */
+    @Query("UPDATE transactions SET refundLinkId = :linkId WHERE id IN (:ids)")
+    suspend fun setRefundLink(ids: List<Long>, linkId: Long)
+
+    /** 解除配对（清空 refundLinkId） */
+    @Query("UPDATE transactions SET refundLinkId = NULL WHERE id = :id")
+    suspend fun clearRefundLink(id: Long)
+
+    /** 取同一 refundLinkId 的所有记录（通常是支出 + 退款两条） */
+    @Query("SELECT * FROM transactions WHERE refundLinkId = :linkId")
+    suspend fun findByRefundLink(linkId: Long): List<TransactionEntity>
+
+    /** 区间内已配对的记录（用于在 Kotlin 层叠加净额） */
+    @Query(
+        """SELECT t.id AS id, t.type AS type, t.amountCents AS amountCents, t.timestamp AS timestamp,
+           t.note AS note, t.counterparty AS counterparty, t.source AS source,
+           c.id AS categoryId, c.name AS categoryName, c.icon AS categoryIcon,
+           a.id AS accountId, a.name AS accountName,
+           t.refundMark AS refundMark, t.refundPending AS refundPending,
+           t.countInStats AS countInStats, t.refundLinkId AS refundLinkId,
+           t.createdAt AS createdAt
+           FROM transactions t
+           JOIN categories c ON t.categoryId = c.id
+           JOIN accounts a ON t.accountId = a.id
+           WHERE t.timestamp >= :startMillis AND t.timestamp < :endMillis
+             AND t.refundLinkId IS NOT NULL AND t.countInStats = 1
+           ORDER BY t.refundLinkId, t.timestamp"""
+    )
+    fun observeLinkedRows(startMillis: Long, endMillis: Long): Flow<List<TransactionRow>>
 
     /** 「记为收入」：去掉退款标记，当成普通收入记账（这笔退款不再有"待处理"状态） */
     @Query(

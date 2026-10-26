@@ -23,19 +23,30 @@ android {
         minSdk = 26
         targetSdk = 35
         // 每次带修改的构建把第三位 +1；1.0.0 起为正式版本，版本名不再带 -beta 后缀
-        versionCode = 41
-        versionName = "1.0.6"
+        versionCode = 42
+        versionName = "1.0.7"
         // 内置构建提交短哈希，供「检查更新」判断本版本分支仓库是否有新提交
         buildConfigField("String", "GIT_COMMIT", "\"$gitCommitShort\"")
     }
 
+    signingConfigs {
+        create("controleco") {
+            storeFile = file("controleco-release.keystore")
+            storePassword = "controleco2024"
+            keyAlias = "controleco"
+            keyPassword = "controleco2024"
+        }
+    }
     buildTypes {
+        debug {
+            // debug 也用固定密钥：保证与 release 同一签名，可互相覆盖安装
+            signingConfig = signingConfigs.getByName("controleco")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // 正式版仍沿用 debug 密钥签名：与既有侧载包同一签名，可直接覆盖安装、不清数据。
-            // 换成独立发布密钥需要用户先卸载（账本会一起没），1.0.0 不做。
-            signingConfig = signingConfigs.getByName("debug")
+            // 使用固定 release 密钥签名：与既有侧载包同一签名，可直接覆盖安装、不清数据。
+            signingConfig = signingConfigs.getByName("controleco")
         }
     }
     compileOptions {

@@ -128,6 +128,14 @@ data class TransactionEntity(
      */
     @ColumnInfo(defaultValue = "1")
     val countInStats: Boolean = true,
+    /**
+     * 退款关联 ID：一笔支出与它的退款收入共享同一个非空值，表示两笔已配对。
+     * - 配对后按「净额」参与统计：支出金额 − 退款金额，正数计入支出，负数计入收入；
+     * - 金额相等时净额为 0，两笔都不再影响收支 / 预算 / 存款；
+     * - null 表示未配对，按独立账单处理。
+     */
+    @ColumnInfo(defaultValue = "NULL")
+    val refundLinkId: Long? = null,
     val createdAt: Long = System.currentTimeMillis(),
 )
 

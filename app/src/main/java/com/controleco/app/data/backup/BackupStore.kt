@@ -228,6 +228,7 @@ object BackupStore {
         put("flowId", t.flowId)
         put("excludeFromAssets", t.excludeFromAssets)
         put("countInStats", t.countInStats)
+        put("refundLinkId", t.refundLinkId ?: JSONObject.NULL)
         put("createdAt", t.createdAt)
     }
 
@@ -350,6 +351,7 @@ object BackupStore {
         flowId = o.optString("flowId"),
         excludeFromAssets = o.optBoolean("excludeFromAssets"),
         countInStats = o.optBoolean("countInStats", true),
+        refundLinkId = if (o.isNull("refundLinkId")) null else o.optLong("refundLinkId"),
         createdAt = o.optLong("createdAt"),
     )
 

@@ -57,7 +57,7 @@ object BackupCsv {
 
     private val TX_HEADER = listOf(
         "时间", "类型", "分类", "金额", "资产账户", "记录标识", "备注", "二级分类", "币种",
-        "编号", "来源", "退款状态", "退款待定", "不扣资产", "流水号", "创建时间", "商户", "计入统计",
+        "编号", "来源", "退款状态", "退款待定", "不扣资产", "流水号", "创建时间", "商户", "计入统计", "退款关联",
     )
 
     private val DATE_TIME_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -127,6 +127,7 @@ object BackupCsv {
                 t.createdAt.toString(),
                 t.counterparty,
                 if (t.countInStats) "1" else "0",
+                t.refundLinkId?.toString() ?: "",
             )
         }
 
@@ -422,6 +423,7 @@ object BackupCsv {
                     flowId = sec.cell(row, "流水号"),
                     excludeFromAssets = boolOf(sec.cell(row, "不扣资产")),
                     countInStats = boolOf(sec.cell(row, "计入统计"), fallback = true),
+                    refundLinkId = sec.cell(row, "退款关联").toLongOrNull(),
                     createdAt = sec.cell(row, "创建时间").toLongOrNull() ?: timestamp,
                 )
             }

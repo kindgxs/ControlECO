@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -29,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,7 +43,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.controleco.app.data.CategoryTree
 import com.controleco.app.data.LedgerViewModel
 import com.controleco.app.data.db.CategoryEntity
+import com.controleco.app.data.db.RefundMark
 import com.controleco.app.data.db.TransactionEntity
+import com.controleco.app.data.db.TransactionRow
 import com.controleco.app.data.db.TxType
 import com.controleco.app.ui.eco.EcoConfirm
 import com.controleco.app.ui.eco.EcoField
@@ -57,6 +62,7 @@ import com.controleco.app.ui.eco.EcoTopBar
 import com.controleco.app.ui.theme.EcoType
 import com.controleco.app.ui.theme.eco
 import com.controleco.app.util.Money
+import kotlinx.coroutines.launch
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -94,6 +100,14 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
 
+    // 退款关联：当前记录已配对的对端记录（共享 refundLinkId）
+    var linkedPair by remember { mutableStateOf<List<TransactionEntity>>(emptyList()) }
+    var showLinkPicker by remember { mutableStateOf(false) }
+    var linkCandidates by remember { mutableStateOf<List<TransactionRow>>(emptyList()) }
+    // 退款多于付款时需要二次确认：Pair(expenseId, refundId)
+    var pendingLinkConfirm by remember { mutableStateOf<Pair<Long, Long>?>(null) }
+    var linkConfirmMessage by remember { mutableStateOf<String?>(null) }
+
     // 编辑模式：加载完成后回填表单（仅一次）
     LaunchedEffect(existing) {
         existing?.let { t ->
@@ -108,6 +122,16 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
             note = t.note
             excludeFromAssets = t.excludeFromAssets
             countInStats = t.countInStats
+        }
+    }
+
+    // 加载退款关联的对端记录（共享 refundLinkId 的另一笔）
+    LaunchedEffect(existing?.refundLinkId) {
+        val linkId = existing?.refundLinkId
+        linkedPair = if (linkId != null && linkId > 0) {
+            listOfNotNull(vm.transactionById(linkId)).filter { it.id != existing?.id }
+        } else {
+            emptyList()
         }
     }
 
@@ -127,6 +151,7 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
     val cents = Money.parseCents(amountText)
     val valid = cents != null && cents > 0L && categoryId != null && accountId != null
     val c = MaterialTheme.eco
+    val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
@@ -333,6 +358,88 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
                 onCheckedChange = { countInStats = it },
             )
 
+            // 退款关联：仅编辑已有记录时显示
+            if (txId > 0) {
+                Spacer(Modifier.height(15.dp))
+                TxSectionLabel("退款关联")
+                Spacer(Modifier.height(8.dp))
+                val current = existing
+                val linkId = current?.refundLinkId
+                when {
+                    linkId != null && linkId > 0 -> {
+                        val peer = linkedPair.firstOrNull()
+                        EcoPane {
+                            EcoRow(
+                                title = peer?.counterparty?.ifBlank { peer.note }?.ifBlank { "已关联的账单" }
+                                    ?: "关联的账单",
+                                subtitle = buildString {
+                                    append(if (peer?.type == TxType.EXPENSE) "支出 " else "收入 ")
+                                    append(Money.formatYuan(peer?.amountCents ?: 0L))
+                                    append(" · ")
+                                    append(
+                                        peer?.let {
+                                            Instant.ofEpochMilli(it.timestamp)
+                                                .atZone(ZoneId.systemDefault())
+                                                .toLocalDate().toString()
+                                        } ?: "—"
+                                    )
+                                },
+                                trail = "已关联",
+                                trailColor = c.blue,
+                                onClick = null,
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                        ) {
+                            EcoTextAction(
+                                text = "解除关联",
+                                onClick = {
+                                    vm.unlinkTransactions(linkId) { err ->
+                                        if (err == null) {
+                                            EcoToast.show("已解除关联")
+                                            linkedPair = emptyList()
+                                            existing = existing?.copy(refundLinkId = null)
+                                        } else {
+                                            EcoToast.show(err, EcoPillTone.Bad)
+                                        }
+                                    }
+                                },
+                                color = c.clay,
+                            )
+                        }
+                    }
+                    current?.type == TxType.EXPENSE -> {
+                        EcoRow(
+                            title = "关联退款…",
+                            subtitle = "选择对应的退款收入，按净额计入统计",
+                            trail = null,
+                            onClick = {
+                                scope.launch {
+                                    linkCandidates = vm.recentRefundIncomeCandidates()
+                                    showLinkPicker = true
+                                }
+                            },
+                        )
+                    }
+                    current?.refundMark == RefundMark.REFUND_INCOME -> {
+                        EcoRow(
+                            title = "关联支出…",
+                            subtitle = "选择对应的支出账单，按净额计入统计",
+                            trail = null,
+                            onClick = {
+                                scope.launch {
+                                    linkCandidates = vm.recentExpenseCandidates()
+                                    showLinkPicker = true
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+
             val message = error
             if (message != null) {
                 Spacer(Modifier.height(8.dp))
@@ -418,6 +525,91 @@ fun EditTransactionScreen(vm: LedgerViewModel, txId: Long, onBack: () -> Unit) {
                             error = err
                         }
                         onBack()
+                    }
+                }
+            },
+        )
+    }
+
+    // 退款关联候选 sheet
+    if (showLinkPicker) {
+        val isExpenseSide = existing?.type == TxType.EXPENSE
+        EcoSheet(
+            onDismiss = { showLinkPicker = false },
+            title = if (isExpenseSide) "选择退款收入" else "选择支出账单",
+            subtitle = "选择与本笔关联的对端账单，关联后按净额计入统计",
+        ) {
+            if (linkCandidates.isEmpty()) {
+                EcoRow(
+                    title = "暂无可关联的账单",
+                    subtitle = if (isExpenseSide) "还没有未关联的退款收入" else "还没有未关联的支出",
+                    onClick = null,
+                )
+            } else {
+                LazyColumn {
+                    items(linkCandidates, key = { it.id }) { row ->
+                        EcoRow(
+                            title = row.counterparty.ifBlank { row.note }.ifBlank { "未命名" },
+                            subtitle = buildString {
+                                append(Money.formatYuan(row.amountCents))
+                                append(" · ")
+                                append(
+                                    Instant.ofEpochMilli(row.timestamp)
+                                        .atZone(ZoneId.systemDefault())
+                                        .toLocalDate().toString()
+                                )
+                            },
+                            onClick = {
+                                val expenseId = if (isExpenseSide) existing!!.id else row.id
+                                val refundId = if (isExpenseSide) row.id else existing!!.id
+                                showLinkPicker = false
+                                vm.linkTransactions(expenseId, refundId) { msg ->
+                                    if (msg == null) {
+                                        EcoToast.show("已关联")
+                                        scope.launch {
+                                            existing = vm.transactionById(existing!!.id)
+                                            linkedPair = listOfNotNull(vm.transactionById(expenseId))
+                                                .filter { it.id != existing?.id }
+                                        }
+                                    } else {
+                                        pendingLinkConfirm = expenseId to refundId
+                                        linkConfirmMessage = msg
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // 退款多于付款：二次确认
+    val pending = pendingLinkConfirm
+    if (pending != null) {
+        EcoConfirm(
+            title = "退款多于付款",
+            body = linkConfirmMessage ?: "",
+            confirmText = "确认关联",
+            danger = false,
+            onDismiss = {
+                pendingLinkConfirm = null
+                linkConfirmMessage = null
+            },
+            onConfirm = {
+                val (expenseId, refundId) = pending
+                pendingLinkConfirm = null
+                linkConfirmMessage = null
+                vm.linkTransactionsConfirmed(expenseId, refundId) { err ->
+                    if (err == null) {
+                        EcoToast.show("已关联")
+                        scope.launch {
+                            existing = vm.transactionById(existing!!.id)
+                            linkedPair = listOfNotNull(vm.transactionById(expenseId))
+                                .filter { it.id != existing?.id }
+                        }
+                    } else {
+                        EcoToast.show(err, EcoPillTone.Bad)
                     }
                 }
             },

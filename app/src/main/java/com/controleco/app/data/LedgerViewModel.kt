@@ -412,6 +412,8 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 PlanAutoPoster.postDue(db, zone = zone)
                 PlanScheduler.schedule(getApplication(), db)
             }
+            // 修正已出账账单的「不计资产/计入统计」标记与计划当前口径一致（防旧数据残留）
+            runCatching { resyncAllPlanEntryFlags() }
         }
         // 卡面图片同样在启动时就开始解码（先缩略图再全尺寸）
         loadCardImage(_cardImageUri.value)
@@ -452,7 +454,16 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     @OptIn(ExperimentalCoroutinesApi::class)
     val homeSpent: StateFlow<Long?> = currentPeriod.flatMapLatest { period ->
         val (start, end) = period.toMillisRange(zone)
-        txDao.observeSpendingTotal(start, end)
+        combine(
+            txDao.observeSpendingTotal(start, end),
+            txDao.observeLinkedRows(start, end),
+        ) { base, linked ->
+            // 已配对账单按净额（支出 − 退款）计入支出；退款跨月时仍以支出所在期为准
+            val linkedExpense = linked.mapNotNull { it.refundLinkId }.distinct().sumOf { linkId ->
+                DepositMath.linkedNetCents(linked, linkId).coerceAtLeast(0L)
+            }
+            base + linkedExpense
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /**
@@ -462,7 +473,24 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     @OptIn(ExperimentalCoroutinesApi::class)
     val homeCategorySums: StateFlow<List<CategorySumRow>?> = currentPeriod.flatMapLatest { period ->
         val (start, end) = period.toMillisRange(zone)
-        txDao.observeSpendingCategorySums(start, end)
+        combine(
+            txDao.observeSpendingCategorySums(start, end),
+            txDao.observeLinkedRows(start, end),
+        ) { base, linked ->
+            // 已配对账单的净额（支出 − 退款，正数）归到支出所在分类
+            val byCat = base.associate { it.categoryId to it.totalCents }.toMutableMap()
+            val catName = base.associate { it.categoryId to it.categoryName }
+            linked.groupBy { it.refundLinkId }.forEach { (linkId, group) ->
+                val expense = group.firstOrNull { it.type == TxType.EXPENSE } ?: return@forEach
+                val net = DepositMath.linkedNetCents(linked, linkId!!)
+                if (net > 0L) {
+                    byCat[expense.categoryId] = (byCat[expense.categoryId] ?: 0L) + net
+                }
+            }
+            byCat.map { (cid, total) ->
+                CategorySumRow(cid, catName[cid] ?: "", total)
+            }.sortedByDescending { it.totalCents }
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /**
@@ -486,7 +514,15 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     val homeTodaySpent: StateFlow<Long?> = todayRef.flatMapLatest { day ->
         val start = day.atStartOfDay(zone).toInstant().toEpochMilli()
         val end = day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli()
-        txDao.observeSpendingTotal(start, end)
+        combine(
+            txDao.observeSpendingTotal(start, end),
+            txDao.observeLinkedRows(start, end),
+        ) { base, linked ->
+            val linkedExpense = linked.mapNotNull { it.refundLinkId }.distinct().sumOf { linkId ->
+                DepositMath.linkedNetCents(linked, linkId).coerceAtLeast(0L)
+            }
+            base + linkedExpense
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     // ---------- 首页预算页：查看日期（回看某个月/某一天） ----------
@@ -623,14 +659,45 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     val periodTotals: StateFlow<List<TypeTotalRow>?> =
-        periodRange.flatMapLatest { (start, end) -> txDao.observeTypeTotals(start, end) }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+        periodRange.flatMapLatest { (start, end) ->
+            combine(
+                txDao.observeTypeTotals(start, end),
+                txDao.observeLinkedRows(start, end),
+            ) { base, linked ->
+                val map = base.associate { it.type to it.totalCents }.toMutableMap()
+                linked.mapNotNull { it.refundLinkId }.distinct().forEach { linkId ->
+                    val net = DepositMath.linkedNetCents(linked, linkId)
+                    if (net >= 0L) {
+                        map[TxType.EXPENSE] = (map[TxType.EXPENSE] ?: 0L) + net
+                    } else {
+                        map[TxType.INCOME] = (map[TxType.INCOME] ?: 0L) + (-net)
+                    }
+                }
+                map.map { (t, c) -> TypeTotalRow(t, c) }
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     /** 本期各支出分类的**未退款支出**：统计页圆环与预算对比共用（与 [periodSpendingTotal] 同口径） */
     @OptIn(ExperimentalCoroutinesApi::class)
     val periodCategorySums: StateFlow<List<CategorySumRow>?> =
-        periodRange.flatMapLatest { (start, end) -> txDao.observeSpendingCategorySums(start, end) }
-            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+        periodRange.flatMapLatest { (start, end) ->
+            combine(
+                txDao.observeSpendingCategorySums(start, end),
+                txDao.observeLinkedRows(start, end),
+            ) { base, linked ->
+                val byCat = base.associate { it.categoryId to it.totalCents }.toMutableMap()
+                val catName = base.associate { it.categoryId to it.categoryName }
+                linked.groupBy { it.refundLinkId }.forEach { (linkId, group) ->
+                    val expense = group.firstOrNull { it.type == TxType.EXPENSE } ?: return@forEach
+                    val net = DepositMath.linkedNetCents(linked, linkId!!)
+                    if (net > 0L) {
+                        byCat[expense.categoryId] = (byCat[expense.categoryId] ?: 0L) + net
+                    }
+                }
+                byCat.map { (cid, total) -> CategorySumRow(cid, catName[cid] ?: "", total) }
+                    .sortedByDescending { it.totalCents }
+            }
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     // ---------- 日历（功能1） ----------
 
@@ -657,7 +724,15 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     val periodSpendingTotal: StateFlow<Long?> = periodRange.flatMapLatest { (start, end) ->
-        txDao.observeSpendingTotal(start, end)
+        combine(
+            txDao.observeSpendingTotal(start, end),
+            txDao.observeLinkedRows(start, end),
+        ) { base, linked ->
+            val linkedExpense = linked.mapNotNull { it.refundLinkId }.distinct().sumOf { linkId ->
+                DepositMath.linkedNetCents(linked, linkId).coerceAtLeast(0L)
+            }
+            base + linkedExpense
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
     val accounts: StateFlow<List<AccountEntity>> =
@@ -1544,13 +1619,14 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 when {
                     expense == null -> { onDone("原支出记录不存在"); return@launch }
                     expense.refundMark != RefundMark.NONE -> { onDone("该笔支出已标记退款"); return@launch }
+                    expense.refundLinkId != null -> { onDone("该笔支出已关联退款"); return@launch }
                     amountCents <= 0 -> { onDone("退款金额需大于 0"); return@launch }
                 }
                 val cats = categoryDao.getAll()
                 // 退款收入归「退款」分类（不是收入「其他」）：账单里一眼能看出这是退回来的钱
                 val incomeCatId = RefundCategory.incomeCategoryId(cats)
                     ?: error("缺少收入分类，请先在分类管理中添加")
-                txDao.insert(
+                val refundId = txDao.insert(
                     TransactionEntity(
                         type = TxType.INCOME,
                         amountCents = amountCents,
@@ -1562,10 +1638,12 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                         source = TxSource.NOTIFICATION,
                         refundMark = RefundMark.REFUND_INCOME,
                         refundPending = false,
+                        refundLinkId = expenseId, // 用支出 id 作为关联键
                     ),
                 )
-                txDao.markExpenseRefunded(expenseId)
-                AppLog.i("refund", "registered refund for expense #$expenseId amount=${Money.formatYuan(amountCents)}")
+                // 配对：支出与退款共享 refundLinkId；净额由统计层按「支出 − 退款」计算
+                txDao.setRefundLink(listOf(expenseId, refundId), expenseId)
+                AppLog.i("refund", "registered refund for expense #$expenseId amount=${Money.formatYuan(amountCents)}, link=$expenseId")
                 withContext(Dispatchers.Main) { onDone(null) }
             } catch (e: Exception) {
                 AppLog.e("refund", "register failed", e)
@@ -1580,14 +1658,19 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
     suspend fun refundExpenseCandidates(amountCents: Long): List<TransactionRow> =
         withContext(Dispatchers.IO) { txDao.expenseCandidatesByAmount(amountCents) }
 
+    /** 近期支出候选（人工关联退款时用，不限金额） */
+    suspend fun recentExpenseCandidates(): List<TransactionRow> =
+        withContext(Dispatchers.IO) { txDao.recentExpenseCandidates() }
+
+    /** 近期退款收入候选（人工关联支出时用） */
+    suspend fun recentRefundIncomeCandidates(): List<TransactionRow> =
+        withContext(Dispatchers.IO) { txDao.recentRefundIncomeCandidates() }
+
     /**
-     * 处理一笔待处理的退款：**把用户选中的那笔支出标成「已退款」**（不再计入支出），
-     * 退款自己则标成「已处理」（`refundPending = 0`，不再出现在待确认里）。
-     *
-     * 两笔记录之间**不写任何关联**：这就是两个独立的标记。支出统计的口径是
-     * 「未退款的支出之和」，所以标记一打上，这笔钱就不再计入本月支出与分类预算。
-     *
-     * 校验：退款必须存在、是退款收入且还没处理；原支出必须存在、是支出且还没标过已退款。
+     * 处理一笔待处理的退款：把用户选中的支出与退款收入配对（共享 refundLinkId）。
+     * 配对后两笔都不再独立计入收支，统计层按「支出 − 退款」的净额叠加。
+     * - 退款 ≥ 支出：净额 ≤ 0，两笔相抵，不影响收支；
+     * - 退款 < 支出：净额为正，计入支出（只统计差额）。
      */
     fun handlePendingRefund(refundId: Long, expenseId: Long, onDone: (String?) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
@@ -1611,14 +1694,85 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                     withContext(Dispatchers.Main) { onDone("该支出已标记过已退款") }
                     return@launch
                 }
-                txDao.markExpenseRefunded(expenseId)
+                if (expense.refundLinkId != null) {
+                    withContext(Dispatchers.Main) { onDone("该支出已关联退款") }
+                    return@launch
+                }
+                txDao.setRefundLink(listOf(expenseId, refundId), expenseId)
                 txDao.clearRefundPending(refundId)
-                AppLog.i("refund", "refund #$refundId handled, expense #$expenseId marked refunded")
+                AppLog.i("refund", "refund #$refundId linked to expense #$expenseId")
                 withContext(Dispatchers.Main) { onDone(null) }
             } catch (e: Exception) {
                 AppLog.e("refund", "handle pending refund failed", e)
                 withContext(Dispatchers.Main) { onDone("处理失败：${e.message ?: "未知错误"}") }
             }
+        }
+    }
+
+    /**
+     * 人工关联：把一笔支出与一笔退款收入配对。
+     * 退款多于支出时先回调提示（返回提示信息，不执行），需调用方确认后再次调用 [linkTransactionsConfirmed]。
+     */
+    fun linkTransactions(expenseId: Long, refundId: Long, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val expense = txDao.getById(expenseId)
+                val refund = txDao.getById(refundId)
+                when {
+                    expense == null -> { withContext(Dispatchers.Main) { onDone("支出记录不存在") }; return@launch }
+                    refund == null -> { withContext(Dispatchers.Main) { onDone("退款记录不存在") }; return@launch }
+                    expense.type != TxType.EXPENSE -> { withContext(Dispatchers.Main) { onDone("只能选择支出账单") }; return@launch }
+                    refund.type != TxType.INCOME -> { withContext(Dispatchers.Main) { onDone("只能选择退款收入") }; return@launch }
+                    expense.refundLinkId != null -> { withContext(Dispatchers.Main) { onDone("该支出已关联退款") }; return@launch }
+                    refund.refundLinkId != null -> { withContext(Dispatchers.Main) { onDone("该退款已关联支出") }; return@launch }
+                }
+                // 退款多于付款：先提醒人工确认
+                if (refund.amountCents > expense.amountCents) {
+                    val diff = Money.formatYuan(refund.amountCents - expense.amountCents)
+                    withContext(Dispatchers.Main) {
+                        onDone("退款金额（${Money.formatYuan(refund.amountCents)}）多于付款（${Money.formatYuan(expense.amountCents)}），多出 $diff。确认关联吗？确认后按净额统计。")
+                    }
+                    return@launch
+                }
+                doLink(expenseId, refundId)
+                withContext(Dispatchers.Main) { onDone(null) }
+            } catch (e: Exception) {
+                AppLog.e("refund", "link failed", e)
+                withContext(Dispatchers.Main) { onDone("关联失败：${e.message ?: "未知错误"}") }
+            }
+        }
+    }
+
+    /** 已确认退款多于付款的情况下执行关联 */
+    fun linkTransactionsConfirmed(expenseId: Long, refundId: Long, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching { doLink(expenseId, refundId) }
+                .onSuccess { withContext(Dispatchers.Main) { onDone(null) } }
+                .onFailure {
+                    AppLog.e("refund", "link confirmed failed", it)
+                    withContext(Dispatchers.Main) { onDone("关联失败：${it.message ?: "未知错误"}") }
+                }
+        }
+    }
+
+    private suspend fun doLink(expenseId: Long, refundId: Long) {
+        txDao.setRefundLink(listOf(expenseId, refundId), expenseId)
+        // 退款收入打上「已处理」标记，避免它再出现在待确认里
+        txDao.clearRefundPending(refundId)
+        AppLog.i("refund", "linked expense #$expenseId with refund #$refundId")
+    }
+
+    /** 解除一对账单的关联（两笔都恢复独立统计） */
+    fun unlinkTransactions(linkId: Long, onDone: (String?) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val pair = txDao.findByRefundLink(linkId)
+                pair.forEach { tx -> txDao.clearRefundLink(tx.id) }
+            }.onSuccess { withContext(Dispatchers.Main) { onDone(null) } }
+                .onFailure {
+                    AppLog.e("refund", "unlink failed", it)
+                    withContext(Dispatchers.Main) { onDone("解除失败：${it.message ?: "未知错误"}") }
+                }
         }
     }
 
@@ -2270,6 +2424,22 @@ class LedgerViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
         }.onFailure { AppLog.e("plan", "sync recurring entries failed", it) }
+    }
+
+    /**
+     * 启动时全量重同步所有分期 / 周期已出账账单的「不计资产」与「计入统计」标记。
+     *
+     * 背景：旧版本或异常情况下，已出账账单的 countInStats 可能与计划当前设置不一致
+     * （例如计划改为「不计入收支统计」后，已出账那笔仍带 countInStats=1，导致预算/存款
+     * 仍把它算成支出）。这里在冷启动时按计划当前口径重算一遍，幂等、只改有差异的行。
+     */
+    private suspend fun resyncAllPlanEntryFlags() {
+        runCatching {
+            db.withTransaction {
+                planDao.getAllInstallments().forEach { syncInstallmentEntries(it) }
+                planDao.getAllRecurring().forEach { syncRecurringEntries(it) }
+            }
+        }.onFailure { AppLog.e("plan", "resync all plan entry flags failed", it) }
     }
 
     /**

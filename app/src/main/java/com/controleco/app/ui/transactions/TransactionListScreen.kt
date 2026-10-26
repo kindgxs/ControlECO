@@ -1042,6 +1042,14 @@ private fun BillRow(
                         color = if (row.refundMark == RefundMark.REFUND_INCOME) c.jade else c.amber,
                     )
                 }
+                if (row.refundLinkId != null) {
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        "已关联",
+                        style = EcoType.Pill.copy(fontSize = 8.sp, fontWeight = FontWeight.Bold),
+                        color = c.blue,
+                    )
+                }
             }
             Text(
                 texts.subLine1,
